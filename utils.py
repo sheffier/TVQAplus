@@ -9,10 +9,7 @@ import zipfile
 import h5py
 
 from tqdm import tqdm
-try:
-    import cPickle as pickle
-except:
-    import pickle
+import pickle
 
 
 def save_json(data, file_path):

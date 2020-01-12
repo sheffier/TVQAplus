@@ -207,7 +207,7 @@ def main():
 
     criterion = nn.CrossEntropyLoss(reduction="sum").to(opt.device)
     optimizer = torch.optim.Adam(
-        filter(lambda p: p.requires_grad, model.parameters()),
+        [p for p in model.parameters() if p.requires_grad],
         lr=opt.lr,
         weight_decay=opt.wd)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
