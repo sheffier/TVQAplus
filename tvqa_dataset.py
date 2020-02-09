@@ -39,11 +39,11 @@ class TVQADataset(Dataset):
         self.sub_flag = "sub" in opt.input_streams
         self.vfeat_flag = "vfeat" in opt.input_streams
         self.vfeat_type = opt.vfeat_type
-        self.qa_bert_h5 = h5py.File(opt.qa_bert_path, "r", driver=opt.h5driver)  # qid + key
+        self.qa_bert_h5 = None
         if self.sub_flag:
-            self.sub_bert_h5 = h5py.File(opt.sub_bert_path, "r", driver=opt.h5driver)  # vid_name
+            self.sub_bert_h5 = None
         if self.vfeat_flag:
-            self.vid_h5 = h5py.File(opt.vfeat_path, "r", driver=opt.h5driver)  # add core
+            self.vid_h5 = None
         self.vcpt_flag = "vcpt" in opt.input_streams or self.vfeat_flag  # if vfeat, must vcpt
         if self.vcpt_flag:
             self.vcpt_dict = load_pickle(opt.vcpt_path) if opt.vcpt_path.endswith(".pickle") \
@@ -105,6 +105,13 @@ class TVQADataset(Dataset):
         return len(self.cur_data_dict)
 
     def __getitem__(self, index):
+        if self.qa_bert_h5 is None:
+            self.qa_bert_h5 = h5py.File(self.opt.qa_bert_path, "r", driver=self.opt.h5driver)  # qid + key
+        if self.sub_flag and self.sub_bert_h5 is None:
+            self.sub_bert_h5 = h5py.File(self.opt.sub_bert_path, "r", driver=self.opt.h5driver)  # vid_name
+        if self.vfeat_flag and self.vid_h5 is None:
+            self.vid_h5 = h5py.File(self.opt.vfeat_path, "r", driver=self.opt.h5driver)  # add core
+
         # 0.5 fps mode
         items = edict()
         items["vid_name"] = self.cur_data_dict[index]["vid_name"]
