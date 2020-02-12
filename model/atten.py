@@ -16,14 +16,14 @@ class Unary(nn.Module):
         self.embed = nn.Conv1d(embed_size, embed_size, 1)
         self.feature_reduce = nn.Conv1d(embed_size, 1, 1)
 
-    def forward(self, X):
+    def forward(self, X, mask):
         X = X.transpose(1, 2)
 
         X_embed = self.embed(X)
 
         X_nl_embed = F.dropout(F.relu(X_embed))
         X_poten = self.feature_reduce(X_nl_embed)
-        return X_poten.squeeze(1)
+        return X_poten.squeeze(1) * mask
 
 
 class Pairwise(nn.Module):
@@ -51,10 +51,11 @@ class Pairwise(nn.Module):
             self.margin_X = nn.Conv1d(self.y_spatial_dim, 1, 1)
             self.margin_Y = nn.Conv1d(self.x_spatial_dim, 1, 1)
 
-    def forward(self, X, Y=None):
+    def forward(self, X, mask_x, Y=None, mask_y=None):
 
         X_t = X.transpose(1, 2)
         Y_t = Y.transpose(1, 2) if Y is not None else X_t
+        mask_y = mask_y if Y is not None else mask_x
 
         X_embed = self.embed_X(X_t)
         Y_embed = self.embed_Y(Y_t)
@@ -63,6 +64,9 @@ class Pairwise(nn.Module):
         Y_norm = F.normalize(Y_embed)
 
         S = X_norm.transpose(1, 2).bmm(Y_norm)
+        S_mask = torch.bmm(mask_x.unsqueeze(2), mask_y.unsqueeze(1))
+        masked_S = S * S_mask
+
         if self.x_spatial_dim is not None:
             S = self.normalize_S(S.view(-1, self.x_spatial_dim * self.y_spatial_dim)) \
                 .view(-1, self.x_spatial_dim, self.y_spatial_dim)
@@ -70,9 +74,8 @@ class Pairwise(nn.Module):
             X_poten = self.margin_X(S.transpose(1, 2)).transpose(1, 2).squeeze(2)
             Y_poten = self.margin_Y(S).transpose(1, 2).squeeze(2)
         else:
-            X_poten = S.mean(dim=2, keepdim=False)
-            Y_poten = S.mean(dim=1, keepdim=False)
-
+            X_poten = masked_S.mean(dim=2, keepdim=False)
+            Y_poten = masked_S.mean(dim=1, keepdim=False)
         if Y is None:
             return X_poten
         else:
@@ -80,8 +83,8 @@ class Pairwise(nn.Module):
 
 
 class Atten(nn.Module):
-    def __init__(self, util_e, sharing_factor_weights=[], prior_flag=False,
-                 sizes=[], size_force=False, pairwise_flag=True, unary_flag=True, self_flag=True):
+    def __init__(self, util_e, sharing_factor_weights=None, prior_flag=False,
+                 sizes=None, size_force=False, pairwise_flag=True, unary_flag=True, self_flag=True):
         """
             The class performs an attention on a given list of utilities representation.
         :param util_e: the embedding dimensions
@@ -101,8 +104,6 @@ class Atten(nn.Module):
 
         self.n_utils = len(util_e)
 
-        self.spatial_pool = nn.ModuleDict()
-
         self.un_models = nn.ModuleList()
 
         self.self_flag = self_flag
@@ -110,17 +111,15 @@ class Atten(nn.Module):
         self.unary_flag = unary_flag
         self.size_force = size_force
 
-        if len(sizes) == 0:
+        if sizes is None:
             sizes = [None for _ in util_e]
 
-        self.sharing_factor_weights = sharing_factor_weights
+        self.sharing_factor_weights = sharing_factor_weights if sharing_factor_weights is not None else []
         self.sharing_factors_set = set([h[0] for h in self.sharing_factor_weights])
 
         # (ans_atten, ques_atten, cap_atten, img_atten, hq_atten, ha_atten)
         for idx, e_dim in enumerate(util_e):
             self.un_models.append(Unary(e_dim))
-            if self.size_force:
-                self.spatial_pool[str(idx)] = nn.AdaptiveAvgPool1d(sizes[idx])
 
         self.pp_models = nn.ModuleDict()
         for ((idx1, e_dim_1), (idx2, e_dim_2)) \
@@ -153,18 +152,18 @@ class Atten(nn.Module):
          All other utilities
         '''
         if pairwise_flag:
-            for idx, num_utils, connected_utils in sharing_factor_weights:
+            for idx, num_utils, connected_utils in self.sharing_factor_weights:
                 for c_u in connected_utils:
                     self.num_of_potentials[c_u] += num_utils
                     self.num_of_potentials[idx] += 1
             for k in self.num_of_potentials.keys():
                 if k not in self.sharing_factors_set:
-                    self.num_of_potentials[k] += (self.n_utils - 1) - len(sharing_factor_weights)
+                    self.num_of_potentials[k] += (self.n_utils - 1) - len(self.sharing_factor_weights)
 
         for idx in range(self.n_utils):
             self.reduce_potentials.append(nn.Conv1d(self.num_of_potentials[idx], 1, 1, bias=False))
 
-    def forward(self, utils, priors=None):
+    def forward(self, utils, utils_mask, priors=None):
         assert self.n_utils == len(utils)
         assert (priors is None and not self.prior_flag) \
                or (priors is not None
@@ -173,32 +172,14 @@ class Atten(nn.Module):
         b_size = utils[0].size(0)
         util_poten = dict()
         attention = list()
-        if self.size_force:
-            for i, num_utils, _ in self.sharing_factor_weights:
-                if str(i) not in self.spatial_pool.keys():
-                    continue
-                else:
-                    high_util = utils[i]
-                    high_util = high_util.view(num_utils * b_size, high_util.size(2), high_util.size(3))
-                    high_util = high_util.transpose(1, 2)
-                    utils[i] = self.spatial_pool[str(i)](high_util).transpose(1, 2)
-
-            for i in range(self.n_utils):
-                if i in self.sharing_factors_set \
-                        or str(i) not in self.spatial_pool.keys():
-                    continue
-                utils[i] = utils[i].transpose(1, 2)
-                utils[i] = self.spatial_pool[str(i)](utils[i]).transpose(1, 2)
-                if self.prior_flag and priors[i] is not None:
-                    priors[i] = self.spatial_pool[str(i)](priors[i].unsqueeze(1)).squeeze(1)
 
         for i, num_utils, connected_list in self.sharing_factor_weights:
             # i.e. High-Order utility
             if self.unary_flag:
-                util_poten.setdefault(i, []).append(self.un_models[i](utils[i]))
+                util_poten.setdefault(i, []).append(self.un_models[i](utils[i], utils_mask[i]))
 
             if self.self_flag:
-                util_poten.setdefault(i, []).append(self.pp_models[str(i)](utils[i]))
+                util_poten.setdefault(i, []).append(self.pp_models[str(i)](utils[i], utils_mask[i]))
 
             if self.pairwise_flag:
                 for j in connected_list:
@@ -212,9 +193,11 @@ class Atten(nn.Module):
                         other_util.size(2))
 
                     if i < j:
-                        poten_ij, poten_ji = self.pp_models[str((i, j))](utils[i], expanded_util)
+                        poten_ij, poten_ji = self.pp_models[str((i, j))](utils[i], utils_mask[i], expanded_util,
+                                                                         utils_mask[j])
                     else:
-                        poten_ji, poten_ij = self.pp_models[str((j, i))](expanded_util, utils[i])
+                        poten_ji, poten_ij = self.pp_models[str((j, i))](expanded_util, utils_mask[j], utils[i],
+                                                                         utils_mask[i])
                     util_poten[i].append(poten_ij)
                     util_poten.setdefault(j, []).append(poten_ji.view(b_size, num_utils, poten_ji.size(1)))
 
@@ -223,9 +206,9 @@ class Atten(nn.Module):
             if i in self.sharing_factors_set:
                 continue
             if self.unary_flag:
-                util_poten.setdefault(i, []).append(self.un_models[i](utils[i]))
+                util_poten.setdefault(i, []).append(self.un_models[i](utils[i], utils_mask[i]))
             if self.self_flag:
-                util_poten.setdefault(i, []).append(self.pp_models[str(i)](utils[i]))
+                util_poten.setdefault(i, []).append(self.pp_models[str(i)](utils[i], utils_mask[i]))
 
         # joint
         if self.pairwise_flag:
@@ -236,7 +219,7 @@ class Atten(nn.Module):
                 if i == j:
                     continue
                 else:
-                    poten_ij, poten_ji = self.pp_models[str((i, j))](utils[i], utils[j])
+                    poten_ij, poten_ji = self.pp_models[str((i, j))](utils[i], utils_mask[i], utils[j], utils_mask[j])
                     util_poten.setdefault(i, []).append(poten_ij)
                     util_poten.setdefault(j, []).append(poten_ji)
 
@@ -253,8 +236,12 @@ class Atten(nn.Module):
             util_poten[i] = torch.cat([p if len(p.size()) == 3 else p.unsqueeze(1)
                                        for p in util_poten[i]], dim=1)
             util_poten[i] = self.reduce_potentials[i](util_poten[i]).squeeze(1)
+            mask = 1e10*(1 - utils_mask[i])
+            util_poten[i] = util_poten[i] - mask
             util_poten[i] = F.softmax(util_poten[i], dim=1).unsqueeze(2)
-            attention.append(torch.bmm(utils[i].transpose(1, 2), util_poten[i]).squeeze(2))
+            util_atten = torch.bmm(utils[i].transpose(1, 2), util_poten[i]).squeeze(2)
+            util_atten = util_atten.unsqueeze(1)
+            attention.append(util_atten)
 
         return attention
 
