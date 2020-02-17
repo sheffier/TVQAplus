@@ -5,7 +5,6 @@ import pickle
 import numpy as np
 import torch
 import copy
-from easydict import EasyDict as edict
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Dataset
 from tqdm import tqdm
@@ -113,7 +112,7 @@ class TVQADataset(Dataset):
             self.vid_h5 = h5py.File(self.opt.vfeat_path, "r", driver=self.opt.h5driver)  # add core
 
         # 0.5 fps mode
-        items = edict()
+        items = dict()
         items["vid_name"] = self.cur_data_dict[index]["vid_name"]
         vid_name = items["vid_name"]
         items["qid"] = self.cur_data_dict[index]["qid"]
@@ -598,19 +597,19 @@ def pad_collate(data):
     """Creates mini-batch tensors from the list of tuples (src_seq, trg_seq).
     """
     # separate source and target sequences
-    batch = edict()
+    batch = dict()
     batch["qas"], batch["qas_mask"] = pad_sequences_2d([d["qas"] for d in data], dtype=torch.long)
     batch["qas_bert"], _ = pad_sequences_2d([d["qas_bert"] for d in data], dtype=torch.float)
     batch["sub"], batch["sub_mask"] = pad_sequences_2d([d["sub"] for d in data], dtype=torch.long)
     batch["sub_bert"], _ = pad_sequences_2d([d["sub_bert"] for d in data], dtype=torch.float)
-    batch["vid_name"] = [d["vid_name"] for d in data]
-    batch["qid"] = [d["qid"] for d in data]
+    batch["vid_name"] = [d["vid_name"] for d in data]  # inference
+    batch["qid"] = [d["qid"] for d in data]  # inference
     batch["target"] = torch.tensor([d["target"] for d in data], dtype=torch.long)
     batch["vcpt"], batch["vcpt_mask"] = pad_sequences_2d([d["vcpt"] for d in data], dtype=torch.long)
     batch["vid"], batch["vid_mask"] = pad_sequences_2d([d["vfeat"] for d in data], dtype=torch.float)
     # no need to pad these two, since we will break down to instances anyway
-    batch["att_labels"] = [d["att_labels"] for d in data]  # a list, each will be (num_img, num_words)
-    batch["anno_st_idx"] = [d["anno_st_idx"] for d in data]  # list(int)
+    batch["att_labels"] = [d["att_labels"] for d in data]  # a list, each will be (num_img, num_words) # $$$$
+    batch["anno_st_idx"] = [d["anno_st_idx"] for d in data]  # list(int) # $$$$
     if data[0]["ts_label"] is None:
         batch["ts_label"] = None
     elif isinstance(data[0]["ts_label"], list):  # (st_ed, ce)
@@ -635,7 +634,7 @@ def pad_collate(data):
 
 def prepare_inputs(batch, max_len_dict=None, device="cuda"):
     """clip and move input data to gpu"""
-    model_in_dict = edict()
+    model_in_dict = dict()
 
     # qas (B, 5, #words, D)
     max_qa_l = min(batch["qas"].shape[2], max_len_dict["max_qa_l"])

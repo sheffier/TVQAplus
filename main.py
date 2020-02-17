@@ -47,7 +47,7 @@ def train(opt, dset, model, criterion, optimizer, epoch, previous_best_acc, use_
         timer_start = time.time()
         model_inputs, _, qids = prepare_inputs(batch, max_len_dict=max_len_dict, device=opt.device)
         prepare_inputs_time.update(time.time() - timer_start)
-        model_inputs.use_hard_negatives = use_hard_negatives
+        model_inputs["use_hard_negatives"] = use_hard_negatives
         try:
             timer_start = time.time()
             outputs, att_loss, _, temporal_loss, _ = model(model_inputs)
@@ -166,7 +166,7 @@ def validate(opt, dset, model, criterion, mode="valid", use_hard_negatives=False
     )
     for val_idx, batch in enumerate(valid_loader):
         model_inputs, targets, qids = prepare_inputs(batch, max_len_dict=max_len_dict, device=opt.device)
-        model_inputs.use_hard_negatives = use_hard_negatives
+        model_inputs["use_hard_negatives"] = use_hard_negatives
         outputs, att_loss, _, temporal_loss, _ = model(model_inputs)
         loss = criterion(outputs, targets) + opt.att_weight * att_loss + opt.ts_weight * temporal_loss
         # measure accuracy and record loss

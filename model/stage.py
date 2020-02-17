@@ -199,7 +199,7 @@ class STAGE(nn.Module):
     def forward_main(self, batch):
         """
         Args:
-            batch: edict, keys = qas, qas_mask, qa_noun_masks, sub, sub_mask, vcpt, vcpt_mask, vid, vid_mask,
+            batch: dict, keys = qas, qas_mask, qa_noun_masks, sub, sub_mask, vcpt, vcpt_mask, vid, vid_mask,
                                  att_labels, att_labels_mask, qid, target, vid_name, ts_label
                 qas, qas_mask, qa_noun_masks: (N, 5, Lqa)
                 sub, sub_mask: (N, #imgs, Ls)
@@ -217,31 +217,31 @@ class STAGE(nn.Module):
                 ts_label_mask: (N, L) for both 'st_ed' and 'frm'
         Returns:
         """
-        self.bsz = len(batch.qid)
+        self.bsz = len(batch["qid"])
         bsz = self.bsz
         num_a = self.num_a
         hsz = self.hsz
 
-        a_embed = self.base_encoder(batch.qas_bert.view(bsz*num_a, -1, self.wd_size),  # (N*5, L, D)
-                                    batch.qas_mask.view(bsz * num_a, -1),  # (N*5, L)
+        a_embed = self.base_encoder(batch["qas_bert"].view(bsz*num_a, -1, self.wd_size),  # (N*5, L, D)
+                                    batch["qas_mask"].view(bsz * num_a, -1),  # (N*5, L)
                                     self.bert_word_encoding_fc,
                                     self.input_embedding,
                                     self.input_encoder)  # (N*5, L, D)
         a_embed = a_embed.view(bsz, num_a, 1, -1, hsz)  # (N, 5, 1, L, D)
-        a_mask = batch.qas_mask.view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
+        a_mask = batch["qas_mask"].view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
 
         attended_sub, attended_vid, attended_vid_mask, attended_sub_mask = (None, ) * 4
         other_outputs = {}  # {"pos_noun_mask": batch.qa_noun_masks}  # used to visualization and compute att acc
         if self.sub_flag:
-            num_imgs, num_words = batch.sub_bert.shape[1:3]
-            sub_embed = self.base_encoder(batch.sub_bert.view(bsz*num_imgs, num_words, -1),  # (N*Li, Lw)
-                                          batch.sub_mask.view(bsz * num_imgs, num_words),  # (N*Li, Lw)
+            num_imgs, num_words = batch["sub_bert"].shape[1:3]
+            sub_embed = self.base_encoder(batch["sub_bert"].view(bsz*num_imgs, num_words, -1),  # (N*Li, Lw)
+                                          batch["sub_mask"].view(bsz * num_imgs, num_words),  # (N*Li, Lw)
                                           self.bert_word_encoding_fc,
                                           self.input_embedding,
                                           self.input_encoder)  # (N*Li, Lw, D)
 
             sub_embed = sub_embed.contiguous().view(bsz, 1, num_imgs, num_words, -1)  # (N, Li, Lw, D)
-            sub_mask = batch.sub_mask.view(bsz, 1, num_imgs, num_words)  # (N, 1, Li, Lw)
+            sub_mask = batch["sub_mask"].view(bsz, 1, num_imgs, num_words)  # (N, 1, Li, Lw)
 
             attended_sub, attended_sub_mask, sub_raw_s, sub_normalized_s = \
                 self.qa_ctx_attention(a_embed, sub_embed, a_mask, sub_mask,
@@ -252,17 +252,17 @@ class STAGE(nn.Module):
             other_outputs["sub_raw_s"] = sub_raw_s
 
         if self.vfeat_flag:
-            num_imgs, num_regions = batch.vid.shape[1:3]
-            vid_embed = F.normalize(batch.vid, p=2, dim=-1)  # (N, Li, Lr, D)
+            num_imgs, num_regions = batch["vid"].shape[1:3]
+            vid_embed = F.normalize(batch["vid"], p=2, dim=-1)  # (N, Li, Lr, D)
 
             vid_embed = self.base_encoder(vid_embed.view(bsz*num_imgs, num_regions, -1),  # (N*Li, Lw)
-                                          batch.vid_mask.view(bsz * num_imgs, num_regions),  # (N*Li, Lr)
+                                          batch["vid_mask"].view(bsz * num_imgs, num_regions),  # (N*Li, Lr)
                                           self.vid_fc,
                                           self.input_embedding,
                                           self.input_encoder)  # (N*Li, L, D)
 
             vid_embed = vid_embed.contiguous().view(bsz, 1, num_imgs, num_regions, -1)  # (N, 1, Li, Lr, D)
-            vid_mask = batch.vid_mask.view(bsz, 1, num_imgs, num_regions)  # (N, 1, Li, Lr)
+            vid_mask = batch["vid_mask"].view(bsz, 1, num_imgs, num_regions)  # (N, 1, Li, Lr)
 
             attended_vid, attended_vid_mask, vid_raw_s, vid_normalized_s = \
                 self.qa_ctx_attention(a_embed, vid_embed, a_mask, vid_mask,
@@ -278,15 +278,15 @@ class STAGE(nn.Module):
                                                attended_sub * attended_vid], dim=-1)  # (N, 5, Li, Lqa, 3D)
             visual_text_embedding = self.concat_fc(visual_text_embedding)  # (N, 5, Li, Lqa, D)
             out, target, t_scores = self.classfier_head_multi_proposal(
-                visual_text_embedding, attended_vid_mask, batch.target, batch.ts_label, batch.ts_label_mask,
+                visual_text_embedding, attended_vid_mask, batch["target"], batch["ts_label"], batch["ts_label_mask"],
                 extra_span_length=self.extra_span_length)
         elif self.sub_flag:
             out, target, t_scores = self.classfier_head_multi_proposal(
-                attended_sub, attended_sub_mask, batch.target, batch.ts_label, batch.ts_label_mask,
+                attended_sub, attended_sub_mask, batch["target"], batch["ts_label"], batch["ts_label_mask"],
                 extra_span_length=self.extra_span_length)
         elif self.vfeat_flag:
             out, target, t_scores = self.classfier_head_multi_proposal(
-                attended_vid, attended_vid_mask, batch.target, batch.ts_label, batch.ts_label_mask,
+                attended_vid, attended_vid_mask, batch["target"], batch["ts_label"], batch["ts_label_mask"],
                 extra_span_length=self.extra_span_length)
         else:
             raise NotImplementedError
@@ -300,13 +300,13 @@ class STAGE(nn.Module):
                 "t_scores": F.softmax(t_scores, dim=2),
                 "att_predictions": self.get_att_prediction(
                     scores=other_outputs["vid_raw_s"],
-                    object_vocab=batch.eval_object_word_ids,
-                    words=batch.qas,
-                    vid_names=batch.vid_name,
-                    qids=batch.qid,
-                    img_indices=batch.image_indices,
-                    boxes=batch.boxes,
-                    start_indices=batch.anno_st_idx,
+                    object_vocab=batch["eval_object_word_ids"],
+                    words=batch["qas"],
+                    vid_names=batch["vid_name"],
+                    qids=batch["qid"],
+                    img_indices=batch["image_indices"],
+                    boxes=batch["boxes"],
+                    start_indices=batch["anno_st_idx"],
                 ) if self.vfeat_flag else None,
             }
             return inference_outputs
@@ -315,18 +315,18 @@ class STAGE(nn.Module):
         att_predictions = None
         # if (self.use_sup_att or not self.training) and self.vfeat_flag:
         if self.use_sup_att and self.training and self.vfeat_flag:
-            start_indices = batch.anno_st_idx
+            start_indices = batch["anno_st_idx"]
             try:
                 cur_att_loss, cur_att_predictions = \
-                    self.get_att_loss(other_outputs["vid_raw_s"], batch.att_labels, batch.target, batch.qas,
-                                      qids=batch.qid,
-                                      q_lens=batch.q_l,
-                                      vid_names=batch.vid_name,
-                                      img_indices=batch.image_indices,
-                                      boxes=batch.boxes,
+                    self.get_att_loss(other_outputs["vid_raw_s"], batch["att_labels"], batch["target"], batch["qas"],
+                                      qids=batch["qid"],
+                                      q_lens=batch["q_l"],
+                                      vid_names=batch["vid_name"],
+                                      img_indices=batch["image_indices"],
+                                      boxes=batch["boxes"],
                                       start_indices=start_indices,
                                       num_negatives=self.num_negatives,
-                                      use_hard_negatives=batch.use_hard_negatives,
+                                      use_hard_negatives=batch["use_hard_negatives"],
                                       drop_topk=self.drop_topk)
             except AssertionError as e:
                 save_pickle(
@@ -339,8 +339,8 @@ class STAGE(nn.Module):
             att_predictions = cur_att_predictions
 
         temporal_loss = self.get_ts_loss(temporal_scores=t_scores,
-                                         ts_labels=batch.ts_label,
-                                         answer_indices=batch.target)
+                                         ts_labels=batch["ts_label"],
+                                         answer_indices=batch["target"])
 
         if self.training:
             return [out, target], att_loss, att_predictions, temporal_loss, t_scores, other_outputs
