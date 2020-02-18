@@ -26,14 +26,30 @@ def rm_empty_by_copy(list_array):
     return list_array
 
 
-class TVQADataset(Dataset):
-    def __init__(self, opt, mode="train"):
+class TVQASplitDataset(Dataset):
+    def __init__(self, common_dst, split_path, split_mode, debug=False):
+        self.common_dst = common_dst
+        self.raw_dset = load_json(split_path)
+        self.split_mode = split_mode
+
+        if debug:
+            self.raw_dset = filter_list_dicts(self.raw_dset, "vid_name", self.common_dst.vcpt_dict.keys())
+
+        self.dset_len = len(self.raw_dset)
+
+    def __len__(self):
+        return self.dset_len
+
+    def __getitem__(self, index):
+        raw_dset_sample = self.raw_dset[index]
+        items = self.common_dst[(raw_dset_sample, self.split_mode)]
+
+        return items
+
+
+class TVQACommonDataset:
+    def __init__(self, opt):
         self.opt = opt
-        self.inference = mode == "test"  # inference mode, no GT annotations
-        self.raw_train = load_json(opt.train_path)
-        if opt.test_path:
-            self.raw_test = load_json(opt.test_path)
-        self.raw_valid = load_json(opt.valid_path)
         self.sub_data = load_json(opt.sub_path)
         self.sub_flag = "sub" in opt.input_streams
         self.vfeat_flag = "vfeat" in opt.input_streams
@@ -47,18 +63,10 @@ class TVQADataset(Dataset):
         if self.vcpt_flag:
             self.vcpt_dict = load_pickle(opt.vcpt_path) if opt.vcpt_path.endswith(".pickle") \
                 else load_json(opt.vcpt_path)
-            if opt.debug:
-                self.raw_train = filter_list_dicts(self.raw_train, "vid_name", self.vcpt_dict.keys())
-                self.raw_valid = filter_list_dicts(self.raw_valid, "vid_name", self.vcpt_dict.keys())
-                if opt.test_path:
-                    self.raw_test = filter_list_dicts(self.raw_test, "vid_name", self.vcpt_dict.keys())
-                print("number of training/valid", len(self.raw_train), len(self.raw_valid))
         self.glove_embedding_path = opt.glove_path
-        self.mode = mode
         self.num_region = opt.num_region
         self.use_sup_att = opt.use_sup_att
         self.att_iou_thd = opt.att_iou_thd
-        self.cur_data_dict = self.get_cur_dict()
 
         # tmp
         self.frm_cnt_path = opt.frm_cnt_path
@@ -84,26 +92,8 @@ class TVQADataset(Dataset):
         self.eval_object_word_ids = [self.word2idx[e] if e in self.word2idx else self.word2idx["<unk>"]
                                      for e in self.eval_object_vocab]
 
-    def set_mode(self, mode):
-        self.mode = mode
-        self.inference = mode == "test"
-        self.cur_data_dict = self.get_cur_dict()
-
-    def get_cur_dict(self):
-        if self.mode == 'train':
-            return self.raw_train
-        elif self.mode == 'valid':
-            return self.raw_valid
-        else:
-            if self.opt.test_path:
-                return self.raw_test
-            else:
-                raise NotImplementedError
-
-    def __len__(self):
-        return len(self.cur_data_dict)
-
-    def __getitem__(self, index):
+    def __getitem__(self, key):
+        sample, mode = key
         if self.qa_bert_h5 is None:
             self.qa_bert_h5 = h5py.File(self.opt.qa_bert_path, "r", driver=self.opt.h5driver)  # qid + key
         if self.sub_flag and self.sub_bert_h5 is None:
@@ -113,30 +103,30 @@ class TVQADataset(Dataset):
 
         # 0.5 fps mode
         items = dict()
-        items["vid_name"] = self.cur_data_dict[index]["vid_name"]
+        items["vid_name"] = sample["vid_name"]
         vid_name = items["vid_name"]
-        items["qid"] = self.cur_data_dict[index]["qid"]
+        items["qid"] = sample["qid"]
         qid = items["qid"]  # int
         frm_cnt = self.frm_cnt_dict[vid_name]
-        located_img_ids = sorted([int(e) for e in self.cur_data_dict[index]["bbox"].keys()])
+        located_img_ids = sorted([int(e) for e in sample["bbox"].keys()])
         start_img_id, end_img_id = located_img_ids[0], located_img_ids[-1]
         indices, start_idx, end_idx = get_all_img_ids(start_img_id, end_img_id, frm_cnt, frame_interval=6)
         items["anno_st_idx"] = start_idx
         indices = np.array(indices) - 1  # since the frame (image) index from 1
 
-        if "ts" in self.cur_data_dict[index]:
-            items["ts_label"] = self.get_ts_label(self.cur_data_dict[index]["ts"][0],
-                                                  self.cur_data_dict[index]["ts"][1],
+        if "ts" in sample:
+            items["ts_label"] = self.get_ts_label(sample["ts"][0],
+                                                  sample["ts"][1],
                                                   frm_cnt,
                                                   indices,
                                                   fps=3)
-            items["ts"] = self.cur_data_dict[index]["ts"]  # [st (float), ed (float)]
+            items["ts"] = sample["ts"]  # [st (float), ed (float)]
         else:
             items["ts_label"], items["ts"] = [0, 0], None
         items["image_indices"] = (indices + 1).tolist()
         items["image_indices"] = items["image_indices"]
 
-        if self.mode in ["test", "valid"] and self.vfeat_flag:
+        if mode in ["test", "valid"] and self.vfeat_flag:
             # add boxes
             boxes = self.vcpt_dict[vid_name]["boxes"]  # full resolution
             lowered_boxes = [boxes[idx][:self.num_region] for idx in indices]
@@ -144,22 +134,22 @@ class TVQADataset(Dataset):
         else:
             items["boxes"] = None
 
-        if "answer_idx" in self.cur_data_dict[index]:
+        if "answer_idx" in sample:
             # add correct answer
-            ca_idx = int(self.cur_data_dict[index]["answer_idx"])
+            ca_idx = int(sample["answer_idx"])
             items["target"] = ca_idx
-            ca_l = self.cur_data_dict[index]["a{}_len".format(ca_idx)]
+            ca_l = sample["a{}_len".format(ca_idx)]
         else:
             items["target"] = 999  # fake
 
         # add q-answers
         answer_keys = ["a0", "a1", "a2", "a3", "a4"]
-        qa_sentences = [self.numericalize(self.cur_data_dict[index]["q"]
-                        + " " + self.cur_data_dict[index][k], eos=False) for k in answer_keys]
+        qa_sentences = [self.numericalize(sample["q"]
+                        + " " + sample[k], eos=False) for k in answer_keys]
         qa_sentences_bert = [torch.from_numpy(
             np.concatenate([self.qa_bert_h5[str(qid) + "_q"], self.qa_bert_h5[str(qid) + "_" + k]], axis=0))
             for k in answer_keys]
-        q_l = self.cur_data_dict[index]["q_len"]
+        q_l = sample["q_len"]
         items["q_l"] = q_l
         items["qas"] = qa_sentences
         items["qas_bert"] = qa_sentences_bert
@@ -214,15 +204,17 @@ class TVQADataset(Dataset):
             items["vfeat"] = [torch.zeros(2, 2)] * 2
 
         # add att
-        if "answer_idx" in self.cur_data_dict[index] and self.use_sup_att and not self.inference and self.vfeat_flag:
-            q_ca_sentence = self.cur_data_dict[index]["q"] + " " + \
-                            self.cur_data_dict[index]["a{}".format(ca_idx)]
-            iou_data = self.get_iou_data(self.cur_data_dict[index]["bbox"], self.vcpt_dict[vid_name], frm_cnt)
+        inference = mode == "test"
+        if "answer_idx" in sample and self.use_sup_att and not inference and self.vfeat_flag:
+            q_ca_sentence = sample["q"] + " " + \
+                            sample["a{}".format(ca_idx)]
+            iou_data = self.get_iou_data(sample["bbox"], self.vcpt_dict[vid_name], frm_cnt)
             items["att_labels"] = self.mk_att_label(
                 iou_data, q_ca_sentence, localized_lowered_region_counts, q_l + ca_l + 1,
-                iou_thd=self.att_iou_thd, single_box=self.inference)
+                iou_thd=self.att_iou_thd, single_box=inference)
         else:
             items["att_labels"] = [torch.zeros(2, 2, 2)] * 2
+
         return items
 
     @classmethod

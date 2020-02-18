@@ -11,15 +11,12 @@ from tensorboardX import SummaryWriter
 
 from utils import AverageMeter, count_parameters
 from model.stage import STAGE
-from tvqa_dataset import TVQADataset, pad_collate, prepare_inputs
+from tvqa_dataset import TVQACommonDataset, TVQASplitDataset, TVQADataset, pad_collate, prepare_inputs
 from config import BaseOptions
 
 
-def train(opt, dset, model, criterion, optimizer, epoch, previous_best_acc, use_hard_negatives=False):
-    dset.set_mode("train")
+def train(opt, train_loader, valid_loader, model, criterion, optimizer, epoch, previous_best_acc, use_hard_negatives=False):
     model.train()
-    train_loader = DataLoader(dset, batch_size=opt.bsz, shuffle=True,
-                              collate_fn=pad_collate, num_workers=opt.num_workers, pin_memory=True)
 
     train_loss = []
     train_loss_att = []
@@ -99,7 +96,7 @@ def train(opt, dset, model, criterion, optimizer, epoch, previous_best_acc, use_
                 opt.writer.add_scalar("Train/Loss_ts", train_loss_ts, niter)
             # Test
             valid_acc, valid_loss, qid_corrects = \
-                validate(opt, dset, model, criterion, mode="valid", use_hard_negatives=use_hard_negatives)
+                validate(opt, valid_loader, model, criterion, mode="valid", use_hard_negatives=use_hard_negatives)
             opt.writer.add_scalar("Valid/Acc", valid_acc, niter)
             opt.writer.add_scalar("Valid/Loss", valid_loss, niter)
 
@@ -120,7 +117,6 @@ def train(opt, dset, model, criterion, optimizer, epoch, previous_best_acc, use_
             # reset to train
             torch.set_grad_enabled(True)
             model.train()
-            dset.set_mode("train")
             train_corrects = []
             train_loss = []
             train_loss_att = []
@@ -148,12 +144,10 @@ def train(opt, dset, model, criterion, optimizer, epoch, previous_best_acc, use_
     return previous_best_acc
 
 
-def validate(opt, dset, model, criterion, mode="valid", use_hard_negatives=False):
-    dset.set_mode(mode)
+def validate(opt, valid_loader, model, criterion, mode="valid", use_hard_negatives=False):
+    # dset.set_mode(mode)
     torch.set_grad_enabled(False)
     model.eval()
-    valid_loader = DataLoader(dset, batch_size=opt.test_bsz, shuffle=False,
-                              collate_fn=pad_collate, num_workers=opt.num_workers, pin_memory=True)
 
     valid_qids = []
     valid_loss = []
@@ -192,8 +186,16 @@ def main():
 
     writer = SummaryWriter(opt.results_dir)
     opt.writer = writer
-    dset = TVQADataset(opt)
-    opt.vocab_size = len(dset.word2idx)
+    common_dset = TVQACommonDataset(opt)
+    train_dset = TVQASplitDataset(common_dset, opt.train_path, "train")
+    valid_dset = TVQASplitDataset(common_dset, opt.valid_path, "valid")
+    opt.vocab_size = len(common_dset.word2idx)
+
+    train_loader = DataLoader(train_dset, batch_size=opt.bsz, shuffle=True,
+                              collate_fn=pad_collate, num_workers=opt.num_workers, pin_memory=True)
+    valid_loader = DataLoader(valid_dset, batch_size=opt.test_bsz, shuffle=False,
+                              collate_fn=pad_collate, num_workers=opt.num_workers, pin_memory=True)
+
     model = STAGE(opt)
 
     count_parameters(model)
@@ -225,9 +227,9 @@ def main():
     for epoch in range(start_epoch, opt.n_epoch):
         if not early_stopping_flag:
             use_hard_negatives = epoch + 1 > opt.hard_negative_start  # whether to use hard negative sampling
-            niter = epoch * np.ceil(len(dset) / float(opt.bsz))
+            niter = epoch * np.ceil(len(train_dset) / float(opt.bsz))
             opt.writer.add_scalar("learning_rate", float(optimizer.param_groups[0]["lr"]), niter)
-            cur_acc = train(opt, dset, model, criterion, optimizer, epoch, best_acc,
+            cur_acc = train(opt, train_loader, valid_loader, model, criterion, optimizer, epoch, best_acc,
                             use_hard_negatives=use_hard_negatives)
             scheduler.step(cur_acc)  # decrease lr when acc is not improving
             # remember best acc
