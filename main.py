@@ -11,7 +11,7 @@ from tensorboardX import SummaryWriter
 
 from utils import AverageMeter, count_parameters
 from model.stage import STAGE
-from tvqa_dataset import TVQACommonDataset, TVQASplitDataset, TVQADataset, pad_collate, prepare_inputs
+from tvqa_dataset import TVQACommonDataset, TVQASplitDataset, pad_collate, prepare_inputs
 from config import BaseOptions
 
 
