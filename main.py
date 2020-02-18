@@ -39,7 +39,7 @@ def train(opt, train_loader, valid_loader, model, criterion, optimizer, epoch, p
     model_backward_time = AverageMeter()
 
     timer_dataloading = time.time()
-    for batch_idx, batch in tqdm(enumerate(train_loader)):
+    for batch_idx, batch in enumerate(tqdm(train_loader)):
         dataloading_time.update(time.time() - timer_dataloading)
         timer_start = time.time()
         model_inputs, _, qids = prepare_inputs(batch, max_len_dict=max_len_dict, device=opt.device)
