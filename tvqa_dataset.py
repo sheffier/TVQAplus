@@ -27,13 +27,13 @@ def rm_empty_by_copy(list_array):
 
 
 class TVQASplitDataset(Dataset):
-    def __init__(self, common_dst, split_path, split_mode, debug=False):
-        self.common_dst = common_dst
+    def __init__(self, common_dset, split_path, split_mode, debug=False):
+        self.common_dset = common_dset
         self.raw_dset = load_json(split_path)
         self.split_mode = split_mode
 
         if debug:
-            self.raw_dset = filter_list_dicts(self.raw_dset, "vid_name", self.common_dst.vcpt_dict.keys())
+            self.raw_dset = filter_list_dicts(self.raw_dset, "vid_name", self.common_dset.vcpt_dict.keys())
 
         self.dset_len = len(self.raw_dset)
 
@@ -42,7 +42,7 @@ class TVQASplitDataset(Dataset):
 
     def __getitem__(self, index):
         raw_dset_sample = self.raw_dset[index]
-        items = self.common_dst[(raw_dset_sample, self.split_mode)]
+        items = self.common_dset[(raw_dset_sample, self.split_mode)]
 
         return items
 
