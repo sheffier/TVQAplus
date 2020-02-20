@@ -595,13 +595,12 @@ def pad_collate(data):
     batch["sub"], batch["sub_mask"] = pad_sequences_2d([d["sub"] for d in data], dtype=torch.long)
     batch["sub_bert"], _ = pad_sequences_2d([d["sub_bert"] for d in data], dtype=torch.float)
     batch["vid_name"] = [d["vid_name"] for d in data]  # inference
-    batch["qid"] = [d["qid"] for d in data]  # inference
+    batch["qid"] = torch.LongTensor([d["qid"] for d in data])  # inference
     batch["target"] = torch.tensor([d["target"] for d in data], dtype=torch.long)
     batch["vcpt"], batch["vcpt_mask"] = pad_sequences_2d([d["vcpt"] for d in data], dtype=torch.long)
     batch["vid"], batch["vid_mask"] = pad_sequences_2d([d["vfeat"] for d in data], dtype=torch.float)
-    # no need to pad these two, since we will break down to instances anyway
-    batch["att_labels"] = [d["att_labels"] for d in data]  # a list, each will be (num_img, num_words) # $$$$
-    batch["anno_st_idx"] = [d["anno_st_idx"] for d in data]  # list(int) # $$$$
+    batch["att_labels"], batch["att_labels_mask"] = pad_seq_of_seq_of_tensors([d["att_labels"] for d in data])
+    batch["anno_st_idx"] = torch.LongTensor([d["anno_st_idx"] for d in data])  # list(int) # $$$$
     if data[0]["ts_label"] is None:
         batch["ts_label"] = None
     elif isinstance(data[0]["ts_label"], list):  # (st_ed, ce)
@@ -616,10 +615,15 @@ def pad_collate(data):
         raise NotImplementedError
 
     batch["ts"] = [d["ts"] for d in data]
-    batch["image_indices"] = [d["image_indices"] for d in data]
+    batch["image_indices"], batch["image_indices_mask"] = pad_sequences_1d([d["image_indices"] for d in data], dtype=torch.long)
     batch["q_l"] = [d["q_l"] for d in data]
 
-    batch["boxes"] = [d["boxes"] for d in data]
+    if data[0]["boxes"] is not None:
+        batch["boxes"], batch["boxes_mask"] = pad_boxes_nested_sequences([d["boxes"] for d in data])
+    else:
+        batch["boxes"] = [d["boxes"] for d in data]
+        batch["boxes_mask"] = batch["boxes"]
+
     batch["object_labels"] = [d["object_labels"] for d in data]
     return batch
 
@@ -648,10 +652,11 @@ def prepare_inputs(batch, max_len_dict=None, device="cuda"):
         model_in_dict[mask_key] = batch[mask_key][:, :max_l].to(device)
 
     # att_label (B, #imgs, #qa_words, #regions)
-    max_att_imgs = min(max([len(d) for d in batch["att_labels"]]), max_len_dict["max_vid_l"])
-    max_att_words = min(max([d[0].shape[0] for d in batch["att_labels"]]), max_len_dict["max_qa_l"])
-    model_in_dict["att_labels"] = [[inner_d[:max_att_words].to(device) for inner_d in d[:max_att_imgs]]
-                                   for d in batch["att_labels"]]
+    model_in_dict["att_labels"] = batch["att_labels"][:, :max_len_dict["max_vid_l"], :max_len_dict["max_qa_l"],
+                                                      :max_len_dict["max_num_regions"]]
+    model_in_dict["att_labels_mask"] = batch["att_labels_mask"][:, :max_len_dict["max_vid_l"],
+                                                                :max_len_dict["max_qa_l"],
+                                                                :max_len_dict["max_num_regions"]]
     model_in_dict["anno_st_idx"] = batch["anno_st_idx"]
 
     if batch["ts_label"] is None:
@@ -679,7 +684,13 @@ def prepare_inputs(batch, max_len_dict=None, device="cuda"):
     model_in_dict["ts"] = batch["ts"]
     model_in_dict["q_l"] = batch["q_l"]
     model_in_dict["image_indices"] = batch["image_indices"]
-    model_in_dict["boxes"] = batch["boxes"]
+    model_in_dict["image_indices_mask"] = batch["image_indices_mask"]
+    if batch["boxes"][0] is not None:
+        model_in_dict["boxes"] = batch["boxes"][:, :max_len_dict["max_vid_l"], :max_len_dict["max_num_regions"], :]
+        model_in_dict["boxes_mask"] = batch["boxes_mask"][:, :max_len_dict["max_vid_l"], :max_len_dict["max_num_regions"]]
+    else:
+        model_in_dict["boxes"] = batch["boxes"]
+        model_in_dict["boxes_mask"] = batch["boxes"]
     model_in_dict["object_labels"] = batch["object_labels"]
     return model_in_dict, targets, qids
 
@@ -699,3 +710,46 @@ def find_match(subtime, time_array, mode="larger"):
         return return_indices
     else:
         raise NotImplementedError
+
+
+def pad_seq_of_seq_of_tensors(sequences, dtype=torch.long):
+    # att_label (B, #imgs, #qa_words, #regions)
+
+    bsz = len(sequences)
+    num_imgs = [len(seq) for seq in sequences]
+    max_imgs = max(num_imgs)
+    img_shapes = [[tuple(img.shape) for img in seq] for seq in sequences]
+    num_words, num_regions = list(zip(*flat_list_of_lists(img_shapes)))
+    max_words = max(num_words)
+    max_regions = max(num_regions)
+
+    padded_seqs = torch.zeros((bsz, max_imgs, max_words, max_regions), dtype=dtype)
+    mask = torch.zeros(bsz, max_imgs, max_words, max_regions).float()
+
+    for b_i in range(bsz):
+        for img in range(num_imgs[b_i]):
+            n_words, n_regions = img_shapes[b_i][img]
+            padded_seqs[b_i, img, :n_words, :n_regions] = sequences[b_i][img]
+            mask[b_i, img, :n_words, :n_regions] = 1
+    return padded_seqs, mask  # , sen_lengths
+
+
+def pad_boxes_nested_sequences(sequences, dtype=torch.float):
+    bsz = len(sequences)
+    num_imgs = [len(sample) for sample in sequences]
+    num_boxes = [[len(img) for img in sample] for sample in sequences]
+    num_coordinates = 4
+
+    max_imgs = max(num_imgs)
+    max_boxes = max(flat_list_of_lists(num_boxes))
+
+    padded_seqs = torch.zeros((bsz, max_imgs, max_boxes, num_coordinates), dtype=dtype)
+    mask = torch.zeros(bsz, max_imgs, max_boxes).float()
+
+    for b_i in range(bsz):
+        for img in range(num_imgs[b_i]):
+            for box in range(num_boxes[b_i][img]):
+                padded_seqs[b_i, img, box] = torch.Tensor(sequences[b_i][img][box])
+                mask[b_i, img, box] = 1
+
+    return padded_seqs, mask

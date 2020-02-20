@@ -186,6 +186,7 @@ class BaseOptions(object):
         if opt.device.type == "cuda":
             opt.bsz = opt.bsz * len(opt.device_ids)
             opt.test_bsz = opt.test_bsz * len(opt.device_ids)
+            opt.log_freq = opt.log_freq // len(opt.device_ids)
         opt.h5driver = None if opt.no_core_driver else "core"
         opt.vfeat_flag = "vfeat" in opt.input_streams
         opt.vcpt_flag = "vcpt" in opt.input_streams

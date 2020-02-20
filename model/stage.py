@@ -311,7 +311,7 @@ class STAGE(nn.Module):
             }
             return inference_outputs
 
-        att_loss = 0
+        att_loss = torch.tensor(0.).to(a_embed.device)
         att_predictions = None
         # if (self.use_sup_att or not self.training) and self.vfeat_flag:
         if self.use_sup_att and self.training and self.vfeat_flag:

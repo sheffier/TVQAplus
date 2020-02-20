@@ -30,6 +30,7 @@ def train(opt, train_loader, valid_loader, model, criterion, optimizer, epoch, p
         max_vid_l=opt.max_vid_l,
         max_vcpt_l=opt.max_vcpt_l,
         max_qa_l=opt.max_qa_l,
+        max_num_regions=opt.num_region
     )
 
     # init meters
@@ -49,8 +50,8 @@ def train(opt, train_loader, valid_loader, model, criterion, optimizer, epoch, p
             timer_start = time.time()
             outputs, att_loss, _, temporal_loss, _ = model(model_inputs)
             outputs, targets = outputs
-            att_loss = opt.att_weight * att_loss
-            temporal_loss = opt.ts_weight * temporal_loss
+            att_loss = opt.att_weight * (att_loss.sum() / len(opt.device_ids))
+            temporal_loss = opt.ts_weight * (temporal_loss.sum() / len(opt.device_ids))
             cls_loss = criterion(outputs, targets)
             # keep the cls_loss at the same magnitude as only classifying batch_size objects
             cls_loss = cls_loss * (1.0 * len(qids) / len(targets))
@@ -157,11 +158,15 @@ def validate(opt, valid_loader, model, criterion, mode="valid", use_hard_negativ
         max_vid_l=opt.max_vid_l,
         max_vcpt_l=opt.max_vcpt_l,
         max_qa_l=opt.max_qa_l,
+        max_num_regions=opt.num_region
     )
+
     for val_idx, batch in enumerate(valid_loader):
         model_inputs, targets, qids = prepare_inputs(batch, max_len_dict=max_len_dict, device=opt.device)
         model_inputs["use_hard_negatives"] = use_hard_negatives
         outputs, att_loss, _, temporal_loss, _ = model(model_inputs)
+        att_loss = (att_loss.sum() / len(opt.device_ids))
+        temporal_loss = (temporal_loss.sum() / len(opt.device_ids))
         loss = criterion(outputs, targets) + opt.att_weight * att_loss + opt.ts_weight * temporal_loss
         # measure accuracy and record loss
         valid_qids += [int(x) for x in qids]
