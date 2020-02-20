@@ -178,7 +178,7 @@ class BaseOptions(object):
             code_dir = os.path.dirname(os.path.realpath(__file__))
             code_zip_filename = os.path.join(opt.results_dir, "code.zip")
             make_zipfile(code_dir, code_zip_filename,
-                         enclosing_dir="code", exclude_paths=["results"], exclude_extensions=[".pyc", ".ipynb"])
+                         enclosing_dir="code", exclude_paths=["results", "tvqa_plus_stage_features"], exclude_extensions=[".pyc", ".ipynb"])
         self.display_save()
 
         assert opt.num_hard <= opt.num_negatives
