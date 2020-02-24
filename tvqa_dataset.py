@@ -616,12 +616,13 @@ def pad_collate(data):
 
     batch["ts"] = [d["ts"] for d in data]
     batch["image_indices"], batch["image_indices_mask"] = pad_sequences_1d([d["image_indices"] for d in data], dtype=torch.long)
-    batch["q_l"] = [d["q_l"] for d in data]
+    batch["q_l"] = torch.LongTensor([d["q_l"] for d in data])
 
     if data[0]["boxes"] is not None:
         batch["boxes"], batch["boxes_mask"] = pad_boxes_nested_sequences([d["boxes"] for d in data])
     else:
-        batch["boxes"] = [d["boxes"] for d in data]
+        batch["boxes"] = np.array([d["boxes"] for d in data], dtype=float)
+        batch["boxes"] = torch.tensor(batch["boxes"], dtype=torch.float)
         batch["boxes_mask"] = batch["boxes"]
 
     batch["object_labels"] = [d["object_labels"] for d in data]
@@ -653,11 +654,11 @@ def prepare_inputs(batch, max_len_dict=None, device="cuda"):
 
     # att_label (B, #imgs, #qa_words, #regions)
     model_in_dict["att_labels"] = batch["att_labels"][:, :max_len_dict["max_vid_l"], :max_len_dict["max_qa_l"],
-                                                      :max_len_dict["max_num_regions"]]
+                                                      :max_len_dict["max_num_regions"]].to(device)
     model_in_dict["att_labels_mask"] = batch["att_labels_mask"][:, :max_len_dict["max_vid_l"],
                                                                 :max_len_dict["max_qa_l"],
-                                                                :max_len_dict["max_num_regions"]]
-    model_in_dict["anno_st_idx"] = batch["anno_st_idx"]
+                                                                :max_len_dict["max_num_regions"]].to(device)
+    model_in_dict["anno_st_idx"] = batch["anno_st_idx"].to(device)
 
     if batch["ts_label"] is None:
         model_in_dict["ts_label"] = None
@@ -676,22 +677,24 @@ def prepare_inputs(batch, max_len_dict=None, device="cuda"):
     model_in_dict["target"] = batch["target"].to(device)
 
     # others
-    model_in_dict["qid"] = batch["qid"]
-    model_in_dict["vid_name"] = batch["vid_name"]
+    model_in_dict["qid"] = batch["qid"].to(device)
+    # model_in_dict["vid_name"] = batch["vid_name"]
+    model_in_dict["vid_name"] = None
 
     targets = model_in_dict["target"]
     qids = model_in_dict["qid"]
-    model_in_dict["ts"] = batch["ts"]
-    model_in_dict["q_l"] = batch["q_l"]
-    model_in_dict["image_indices"] = batch["image_indices"]
-    model_in_dict["image_indices_mask"] = batch["image_indices_mask"]
-    if batch["boxes"][0] is not None:
-        model_in_dict["boxes"] = batch["boxes"][:, :max_len_dict["max_vid_l"], :max_len_dict["max_num_regions"], :]
-        model_in_dict["boxes_mask"] = batch["boxes_mask"][:, :max_len_dict["max_vid_l"], :max_len_dict["max_num_regions"]]
-    else:
+    # model_in_dict["ts"] = batch["ts"]
+    model_in_dict["q_l"] = batch["q_l"].to(device)
+    model_in_dict["image_indices"] = batch["image_indices"].to(device)
+    model_in_dict["image_indices_mask"] = batch["image_indices_mask"].to(device)
+    if batch["boxes"].dim() == 1:
         model_in_dict["boxes"] = batch["boxes"]
         model_in_dict["boxes_mask"] = batch["boxes"]
-    model_in_dict["object_labels"] = batch["object_labels"]
+    else:
+        model_in_dict["boxes"] = batch["boxes"][:, :max_len_dict["max_vid_l"], :max_len_dict["max_num_regions"], :].to(device)
+        model_in_dict["boxes_mask"] = batch["boxes_mask"][:, :max_len_dict["max_vid_l"], :max_len_dict["max_num_regions"]].to(device)
+
+    # model_in_dict["object_labels"] = batch["object_labels"]  # $%#$%@#$^@#$^@$^?W?S?DFS?DF
     return model_in_dict, targets, qids
 
 
