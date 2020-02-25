@@ -65,8 +65,8 @@ def train(opt, train_loader, valid_loader, model, criterion, optimizer, epoch, p
             model_backward_time.update(time.time() - timer_start)
             # scheduler.step()
             train_loss.append(loss.data.item())
-            train_loss_att.append(float(att_loss))
-            train_loss_ts.append(float(temporal_loss))
+            train_loss_att.append(float(att_loss.data.item()))
+            train_loss_ts.append(float(temporal_loss.data.item()))
             train_loss_cls.append(cls_loss.item())
             pred_ids = outputs.data.max(1)[1]
             train_corrects += pred_ids.eq(targets.data).tolist()
