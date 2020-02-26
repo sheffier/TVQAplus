@@ -43,8 +43,6 @@ def train(opt, train_loader, valid_loader, model, criterion, optimizer, epoch, p
     model_backward_time = AverageMeter()
 
     timer_dataloading = time.time()
-    if opt._master or opt.dist:
-        print(f"[GPU_ID {torch.cuda.current_device()}] start training")
     for batch_idx, batch in enumerate(tqdm(train_loader, disable=not opt._master)):
         dataloading_time.update(time.time() - timer_dataloading)
         timer_start = time.time()
@@ -255,6 +253,8 @@ def worker(model, opt):
     start_epoch = 0
     early_stopping_cnt = 0
     early_stopping_flag = False
+    if opt._master or opt.dist:
+        print(f"[GPU_ID {torch.cuda.current_device()}] start training")
     for epoch in range(start_epoch, opt.n_epoch):
         if not early_stopping_flag:
             if opt.dist:
