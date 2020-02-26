@@ -312,25 +312,31 @@ def data_parallel_process(opt):
 
 
 def dist_process(gpu, opt):
-    opt._master = gpu == 0
-    opt.device = torch.device(f"cuda:{opt.device_ids[gpu]}")
+    results_dir = None
+    debug = None
+    
+    try:
+        opt._master = gpu == 0
+        opt.device = torch.device(f"cuda:{opt.device_ids[gpu]}")
 
-    rank = gpu
-    opt.rank = rank
-    setup(rank, opt)
+        rank = gpu
+        opt.rank = rank
+        setup(rank, opt)
 
-    model = STAGE(opt)
+        model = STAGE(opt)
 
-    if opt._master:
-        count_parameters(model)
+        if opt._master:
+            count_parameters(model)
 
-    torch.cuda.set_device(opt.device)
-    model.cuda(opt.device)
+        torch.cuda.set_device(opt.device)
+        model.cuda(opt.device)
 
-    # Wrap the model
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[opt.device])
+        # Wrap the model
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[opt.device])
 
-    results_dir, debug = worker(model, opt)
+        results_dir, debug = worker(model, opt)
+    finally:
+        cleanup()
 
     return results_dir, debug
 
