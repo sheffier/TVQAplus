@@ -28,6 +28,8 @@ class BaseOptions(object):
         self.parser.add_argument("--test_bsz", type=int, default=16, help="mini-batch size for testing")
         self.parser.add_argument("--device", type=int, default=0, help="0 cuda, -1 cpu")
         self.parser.add_argument("--device_ids", type=int, nargs="+", default=[0], help="GPU ids to run the job")
+        self.parser.add_argument("--multi_gpu_mode", type=int, default=0, help="0: DataParallel, "
+                                                                               "1: DistributedDataParallel")
         self.parser.add_argument("--num_workers", type=int, default=2,
                                  help="num subprocesses used to load the data, 0: use main process")
         self.parser.add_argument("--t_iter", type=int, default=0,
@@ -181,12 +183,22 @@ class BaseOptions(object):
                          enclosing_dir="code", exclude_paths=["results", "tvqa_plus_stage_features"], exclude_extensions=[".pyc", ".ipynb"])
         self.display_save()
 
+        opt.dist = opt.multi_gpu_mode == 1
+        if opt.device == 0:
+            assert torch.cuda.is_available(), "Cuda is not available"
+            print("CUDA enabled.")
+            if len(opt.device_ids) > 1:
+                print(f"Multi GPU mode #{opt.multi_gpu_mode} ", opt.device_ids)
+                if not opt.dist:
+                    opt.bsz = opt.bsz * len(opt.device_ids)
+                    opt.test_bsz = opt.test_bsz * len(opt.device_ids)
+                    opt.log_freq = opt.log_freq // len(opt.device_ids)
+            else:
+                assert opt.dist is False, "At least two GPUs need to be configured when " \
+                                          "using DistributedDataParallel mode."
+
         assert opt.num_hard <= opt.num_negatives
-        opt.device = torch.device("cuda:%d" % opt.device_ids[0] if opt.device >= 0 else "cpu")
-        if opt.device.type == "cuda":
-            opt.bsz = opt.bsz * len(opt.device_ids)
-            opt.test_bsz = opt.test_bsz * len(opt.device_ids)
-            opt.log_freq = opt.log_freq // len(opt.device_ids)
+
         opt.h5driver = None if opt.no_core_driver else "core"
         opt.vfeat_flag = "vfeat" in opt.input_streams
         opt.vcpt_flag = "vcpt" in opt.input_streams

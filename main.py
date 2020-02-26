@@ -1,9 +1,12 @@
 import os
 import sys
 import time
+import random
 import torch
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
+import torch.multiprocessing as mp
+import torch.distributed as dist
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
@@ -40,7 +43,9 @@ def train(opt, train_loader, valid_loader, model, criterion, optimizer, epoch, p
     model_backward_time = AverageMeter()
 
     timer_dataloading = time.time()
-    for batch_idx, batch in enumerate(tqdm(train_loader)):
+    if opt._master or opt.dist:
+        print(f"[GPU_ID {torch.cuda.current_device()}] start training")
+    for batch_idx, batch in enumerate(tqdm(train_loader, disable=not opt._master)):
         dataloading_time.update(time.time() - timer_dataloading)
         timer_start = time.time()
         model_inputs, _, qids = prepare_inputs(batch, max_len_dict=max_len_dict, device=opt.device)
@@ -90,16 +95,18 @@ def train(opt, train_loader, valid_loader, model, criterion, optimizer, epoch, p
                 train_loss_att = sum(train_loss_att) / float(len(train_corrects))
                 train_loss_cls = sum(train_loss_cls) / float(len(train_corrects))
                 train_loss_ts = sum(train_loss_ts) / float(len(train_corrects))
-                opt.writer.add_scalar("Train/Acc", train_acc, niter)
-                opt.writer.add_scalar("Train/Loss", train_loss, niter)
-                opt.writer.add_scalar("Train/Loss_att", train_loss_att, niter)
-                opt.writer.add_scalar("Train/Loss_cls", train_loss_cls, niter)
-                opt.writer.add_scalar("Train/Loss_ts", train_loss_ts, niter)
+                if opt.writer:
+                    opt.writer.add_scalar("Train/Acc", train_acc, niter)
+                    opt.writer.add_scalar("Train/Loss", train_loss, niter)
+                    opt.writer.add_scalar("Train/Loss_att", train_loss_att, niter)
+                    opt.writer.add_scalar("Train/Loss_cls", train_loss_cls, niter)
+                    opt.writer.add_scalar("Train/Loss_ts", train_loss_ts, niter)
             # Test
             valid_acc, valid_loss, qid_corrects = \
                 validate(opt, valid_loader, model, criterion, mode="valid", use_hard_negatives=use_hard_negatives)
-            opt.writer.add_scalar("Valid/Acc", valid_acc, niter)
-            opt.writer.add_scalar("Valid/Loss", valid_loss, niter)
+            if opt.writer:
+                opt.writer.add_scalar("Valid/Acc", valid_acc, niter)
+                opt.writer.add_scalar("Valid/Loss", valid_loss, niter)
 
             valid_log_str = "%02d\t%.4f" % (batch_idx, valid_acc)
             valid_acc_log.append(valid_log_str)
@@ -107,7 +114,8 @@ def train(opt, train_loader, valid_loader, model, criterion, optimizer, epoch, p
             # remember the best acc.
             if valid_acc > previous_best_acc:
                 previous_best_acc = valid_acc
-                torch.save(model.state_dict(), os.path.join(opt.results_dir, "best_valid.pth"))
+                if opt._master:
+                    torch.save(model.state_dict(), os.path.join(opt.results_dir, "best_valid.pth"))
 
             print("Epoch {:02d} [Train] acc {:.4f} loss {:.4f} loss_att {:.4f} loss_ts {:.4f} loss_cls {:.4f}"
                   .format(epoch, train_acc, train_loss, train_loss_att, train_loss_ts, train_loss_cls))
@@ -139,14 +147,14 @@ def train(opt, train_loader, valid_loader, model, criterion, optimizer, epoch, p
             break
 
     # additional log
-    with open(os.path.join(opt.results_dir, "valid_acc.log"), "a") as f:
-        f.write("\n".join(valid_acc_log) + "\n")
+    if opt._master:
+        with open(os.path.join(opt.results_dir, "valid_acc.log"), "a") as f:
+            f.write("\n".join(valid_acc_log) + "\n")
 
     return previous_best_acc
 
 
 def validate(opt, valid_loader, model, criterion, mode="valid", use_hard_negatives=False):
-    # dset.set_mode(mode)
     torch.set_grad_enabled(False)
     model.eval()
 
@@ -182,36 +190,32 @@ def validate(opt, valid_loader, model, criterion, mode="valid", use_hard_negativ
     return valid_acc, valid_loss, qid_corrects
 
 
-def main():
-    opt = BaseOptions().parse()
+def setup(rank, opt):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '8888'
+
+    # initialize the process group
+    dist.init_process_group(
+        backend='nccl',
+        init_method='env://',
+        world_size=opt.world_size,
+        rank=rank
+    )
+
+    # Explicitly setting seed to make sure that models created in two processes
+    # start from same random weights and biases.
+    random.seed(opt.seed)
+    np.random.seed(opt.seed)
     torch.manual_seed(opt.seed)
     cudnn.benchmark = False
     cudnn.deterministic = True
-    np.random.seed(opt.seed)
 
-    writer = SummaryWriter(opt.results_dir)
-    opt.writer = writer
-    common_dset = TVQACommonDataset(opt)
-    train_dset = TVQASplitDataset(common_dset, opt.train_path, "train")
-    valid_dset = TVQASplitDataset(common_dset, opt.valid_path, "valid")
-    opt.vocab_size = len(common_dset.word2idx)
 
-    train_loader = DataLoader(train_dset, batch_size=opt.bsz, shuffle=True,
-                              collate_fn=pad_collate, num_workers=opt.num_workers, pin_memory=True)
-    valid_loader = DataLoader(valid_dset, batch_size=opt.test_bsz, shuffle=False,
-                              collate_fn=pad_collate, num_workers=opt.num_workers, pin_memory=True)
+def cleanup():
+    dist.destroy_process_group()
 
-    model = STAGE(opt)
 
-    count_parameters(model)
-
-    if opt.device.type == "cuda":
-        print("CUDA enabled.")
-        model.to(opt.device)
-        if len(opt.device_ids) > 1:
-            print("Use multi GPU", opt.device_ids)
-            model = torch.nn.DataParallel(model, device_ids=opt.device_ids)  # use multi GPU
-
+def worker(model, opt):
     criterion = nn.CrossEntropyLoss(reduction="sum").to(opt.device)
     optimizer = torch.optim.Adam(
         [p for p in model.parameters() if p.requires_grad],
@@ -225,15 +229,40 @@ def main():
         verbose=True
     )
 
+    common_dset = TVQACommonDataset(opt)
+    train_dset = TVQASplitDataset(common_dset, opt.train_path, "train")
+    valid_dset = TVQASplitDataset(common_dset, opt.valid_path, "valid")
+    opt.vocab_size = len(common_dset.word2idx)
+
+    if opt.dist:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(
+            train_dset,
+            num_replicas=opt.world_size,
+            rank=opt.rank
+        )
+
+        train_loader = DataLoader(train_dset, batch_size=opt.bsz, shuffle=False, sampler=train_sampler,
+                                  collate_fn=pad_collate, num_workers=opt.num_workers, pin_memory=True)
+        valid_loader = DataLoader(valid_dset, batch_size=opt.test_bsz, shuffle=False,
+                                  collate_fn=pad_collate, num_workers=opt.num_workers, pin_memory=True)
+    else:
+        train_loader = DataLoader(train_dset, batch_size=opt.bsz, shuffle=True,
+                                  collate_fn=pad_collate, num_workers=opt.num_workers, pin_memory=True)
+        valid_loader = DataLoader(valid_dset, batch_size=opt.test_bsz, shuffle=False,
+                                  collate_fn=pad_collate, num_workers=opt.num_workers, pin_memory=True)
+
     best_acc = 0.
     start_epoch = 0
     early_stopping_cnt = 0
     early_stopping_flag = False
     for epoch in range(start_epoch, opt.n_epoch):
         if not early_stopping_flag:
+            if opt.dist:
+                train_sampler.set_epoch(epoch)
             use_hard_negatives = epoch + 1 > opt.hard_negative_start  # whether to use hard negative sampling
-            niter = epoch * np.ceil(len(train_dset) / float(opt.bsz))
-            opt.writer.add_scalar("learning_rate", float(optimizer.param_groups[0]["lr"]), niter)
+            if opt.writer:
+                niter = epoch * np.ceil(len(train_dset) / float(opt.bsz))
+                opt.writer.add_scalar("learning_rate", float(optimizer.param_groups[0]["lr"]), niter)
             cur_acc = train(opt, train_loader, valid_loader, model, criterion, optimizer, epoch, best_acc,
                             use_hard_negatives=use_hard_negatives)
             scheduler.step(cur_acc)  # decrease lr when acc is not improving
@@ -248,8 +277,9 @@ def main():
                 early_stopping_cnt = 0
         else:
             print("=> early stop with valid acc %.4f" % best_acc)
-            opt.writer.export_scalars_to_json(os.path.join(opt.results_dir, "all_scalars.json"))
-            opt.writer.close()
+            if opt.writer:
+                opt.writer.export_scalars_to_json(os.path.join(opt.results_dir, "all_scalars.json"))
+                opt.writer.close()
             break  # early stop break
 
         if opt.debug:
@@ -258,5 +288,73 @@ def main():
     return opt.results_dir.split("/")[1], opt.debug
 
 
+def data_parallel_process(opt):
+    opt._master = True
+    torch.manual_seed(opt.seed)
+    cudnn.benchmark = False
+    cudnn.deterministic = True
+    np.random.seed(opt.seed)
+
+    model = STAGE(opt)
+
+    count_parameters(model)
+
+    opt.device = torch.device(f"cuda:{opt.device_ids[0]}" if opt.device >= 0 else "cpu")
+
+    if opt.device.type == "cuda":
+        model.to(opt.device)
+        if len(opt.device_ids) > 1:
+            model = torch.nn.DataParallel(model, device_ids=opt.device_ids)  # use multi GPU
+
+    results_dir, debug = worker(model, opt)
+
+    return results_dir, debug
+
+
+def dist_process(gpu, opt):
+    opt._master = gpu == 0
+    opt.device = torch.device(f"cuda:{opt.device_ids[gpu]}")
+
+    rank = gpu
+    opt.rank = rank
+    setup(rank, opt)
+
+    model = STAGE(opt)
+
+    if opt._master:
+        count_parameters(model)
+
+    torch.cuda.set_device(opt.device)
+    model.cuda(opt.device)
+
+    # Wrap the model
+    model = nn.parallel.DistributedDataParallel(model, device_ids=[opt.device])
+
+    results_dir, debug = worker(model, opt)
+
+    return results_dir, debug
+
+
+def main(opt):
+    if opt.dist:
+        opt.writer = None
+        opt.world_size = len(opt.device_ids)
+        mp.spawn(dist_process, nprocs=len(opt.device_ids), args=(opt,))
+    else:
+        writer = SummaryWriter(opt.results_dir)
+        opt.writer = writer
+        data_parallel_process(opt)
+
+
 if __name__ == "__main__":
-    results_dir, debug = main()
+    opt = BaseOptions().parse()
+
+    if opt.dist:
+        try:
+            mp.set_start_method(method='spawn')
+        except RuntimeError as exception:
+            print(exception)
+            if str(exception) != 'context has already been set':
+                raise
+
+    main(opt)
