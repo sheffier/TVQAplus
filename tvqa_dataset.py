@@ -214,7 +214,7 @@ class TVQACommonDataset:
                 iou_data, q_ca_sentence, localized_lowered_region_counts, q_l + ca_l + 1,
                 iou_thd=self.att_iou_thd, single_box=inference)
         else:
-            items["att_labels"] = [torch.zeros(2, 2, 2)] * 2
+            items["att_labels"] = None
 
         return items
 
@@ -600,7 +600,11 @@ def pad_collate(data):
     batch["target"] = torch.tensor([d["target"] for d in data], dtype=torch.long)
     batch["vcpt"], batch["vcpt_mask"] = pad_sequences_2d([d["vcpt"] for d in data], dtype=torch.long)
     batch["vid"], batch["vid_mask"] = pad_sequences_2d([d["vfeat"] for d in data], dtype=torch.float)
-    batch["att_labels"], batch["att_labels_mask"] = pad_seq_of_seq_of_tensors([d["att_labels"] for d in data])
+
+    if data[0]["att_labels"] is None:
+        batch["att_labels"] = None
+    else:
+        batch["att_labels"], batch["att_labels_mask"] = pad_seq_of_seq_of_tensors([d["att_labels"] for d in data])
     batch["anno_st_idx"] = torch.LongTensor([d["anno_st_idx"] for d in data])  # list(int) # $$$$
     if data[0]["ts_label"] is None:
         batch["ts_label"] = None
@@ -654,11 +658,14 @@ def prepare_inputs(batch, max_len_dict=None, device="cuda", non_blocking=True):
         model_in_dict[mask_key] = batch[mask_key][:, :max_l].to(device=device, non_blocking=non_blocking)
 
     # att_label (B, #imgs, #qa_words, #regions)
-    model_in_dict["att_labels"] = batch["att_labels"][:, :max_len_dict["max_vid_l"], :max_len_dict["max_qa_l"],
-                                                      :max_len_dict["max_num_regions"]].to(device=device, non_blocking=non_blocking)
-    model_in_dict["att_labels_mask"] = batch["att_labels_mask"][:, :max_len_dict["max_vid_l"],
-                                                                :max_len_dict["max_qa_l"],
-                                                                :max_len_dict["max_num_regions"]].to(device=device, non_blocking=non_blocking)
+    if batch["att_labels"] is not None:
+        model_in_dict["att_labels"] = batch["att_labels"][:, :max_len_dict["max_vid_l"], :max_len_dict["max_qa_l"],
+                                                          :max_len_dict["max_num_regions"]].to(device=device,
+                                                                                               non_blocking=non_blocking)
+        model_in_dict["att_labels_mask"] = batch["att_labels_mask"][:, :max_len_dict["max_vid_l"],
+                                                                    :max_len_dict["max_qa_l"],
+                                                                    :max_len_dict["max_num_regions"]].to(device=device,
+                                                                                                         non_blocking=non_blocking)
     model_in_dict["anno_st_idx"] = batch["anno_st_idx"].to(device=device, non_blocking=non_blocking)
 
     if batch["ts_label"] is None:
