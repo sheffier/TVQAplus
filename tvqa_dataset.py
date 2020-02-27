@@ -1,11 +1,12 @@
+from __future__ import annotations
 import os
-import sys
 import h5py
 import pickle
 import numpy as np
 import torch
 import copy
-from torch.utils.data import DataLoader
+from itertools import islice
+from typing import Optional
 from torch.utils.data.dataset import Dataset
 from tqdm import tqdm
 
@@ -48,8 +49,19 @@ class TVQASplitDataset(Dataset):
         return items
 
 
-class TVQACommonDataset:
+class SingletonMeta(type):
+    _instance: Optional[TVQACommonDataset] = None
+
+    def __call__(self, args) -> TVQACommonDataset:
+        if self._instance is None:
+            self._instance = super().__call__(args)
+        return self._instance
+
+
+class TVQACommonDataset(metaclass=SingletonMeta):
     def __init__(self, opt):
+        if opt.h5driver is "None":
+            opt.h5driver = None
         self.opt = opt
         self.sub_data = load_json(opt.sub_path)
         self.sub_flag = "sub" in opt.input_streams
@@ -60,12 +72,9 @@ class TVQACommonDataset:
             self.sub_bert_h5 = None
         if self.vfeat_flag:
             self.vid_h5 = None
-        self.vcpt_flag = "vcpt" in opt.input_streams or self.vfeat_flag  # if vfeat, must vcpt
-        if self.vcpt_flag:
             self.vcpt_dict = load_pickle(opt.vcpt_path) if opt.vcpt_path.endswith(".pickle") \
                 else load_json(opt.vcpt_path)
-        self.glove_embedding_path = opt.glove_path
-        self.num_region = opt.num_region
+
         self.use_sup_att = opt.use_sup_att
         self.att_iou_thd = opt.att_iou_thd
 
@@ -74,24 +83,16 @@ class TVQACommonDataset:
         self.frm_cnt_dict = load_json(self.frm_cnt_path)
 
         # build/load vocabulary
-        self.word2idx_path = opt.word2idx_path
-        self.embedding_dim = 300
-        self.word2idx = {"<pad>": 0, "<unk>": 1, "<eos>": 2}
-        self.idx2word = {0: "<pad>", 1: "<unk>", 2: "<eos>"}
-        self.offset = len(self.word2idx)
-        text_keys = ["a0", "a1", "a2", "a3", "a4", "q", "sub_text"]
-        if not files_exist([self.word2idx_path]):
-            print("\nNo cache founded.")
-            self.build_word_vocabulary(text_keys, word_count_threshold=2)
-        else:
-            print("\nLoading cache ...")
-            # self.word2idx = load_pickle(self.word2idx_path)
-            self.word2idx = load_json(self.word2idx_path)
+        assert files_exist([opt.word2idx_path]), "\nNo cache founded."
+
+        print("\nLoading cache ...")
+        self.word2idx = load_json(opt.word2idx_path)
         self.idx2word = {i: w for w, i in self.word2idx.items()}
 
-        self.eval_object_vocab = load_json(opt.eval_object_vocab_path)
-        self.eval_object_word_ids = [self.word2idx[e] if e in self.word2idx else self.word2idx["<unk>"]
-                                     for e in self.eval_object_vocab]
+        self.max_sub_l = opt.max_sub_l
+        self.max_vid_l = opt.max_vid_l
+        self.max_qa_l = opt.max_qa_l
+        self.max_num_regions = opt.num_region
 
     def __getitem__(self, key):
         sample, mode = key
@@ -127,28 +128,14 @@ class TVQACommonDataset:
         items["image_indices"] = (indices + 1).tolist()
         items["image_indices"] = items["image_indices"]
 
-        if mode in ["test", "valid"] and self.vfeat_flag:
-            # add boxes
-            boxes = self.vcpt_dict[vid_name]["boxes"]  # full resolution
-            lowered_boxes = [boxes[idx][:self.num_region] for idx in indices]
-            items["boxes"] = lowered_boxes[start_idx:end_idx+1]
-        else:
-            items["boxes"] = None
-
-        if "answer_idx" in sample:
-            # add correct answer
-            ca_idx = int(sample["answer_idx"])
-            items["target"] = ca_idx
-            ca_l = sample["a{}_len".format(ca_idx)]
-        else:
-            items["target"] = 999  # fake
-
         # add q-answers
         answer_keys = ["a0", "a1", "a2", "a3", "a4"]
         qa_sentences = [self.numericalize(sample["q"]
-                        + " " + sample[k], eos=False) for k in answer_keys]
-        qa_sentences_bert = [torch.from_numpy(
-            np.concatenate([self.qa_bert_h5[str(qid) + "_q"], self.qa_bert_h5[str(qid) + "_" + k]], axis=0))
+                        + " " + sample[k], eos=False)[:self.max_qa_l] for k in answer_keys]
+        qa_sentences_bert = [
+            torch.from_numpy(np.concatenate(
+                [self.qa_bert_h5[str(qid) + "_q"], self.qa_bert_h5[str(qid) + "_" + k]],
+                axis=0))[:self.max_qa_l, :]
             for k in answer_keys]
         q_l = sample["q_len"]
         items["q_l"] = q_l
@@ -170,51 +157,53 @@ class TVQACommonDataset:
                 sub_bert_embed = rm_empty_by_copy(sub_bert_embed)
             assert len(sub_bert_embed) == len(raw_sub_n_tokens)  # we did not truncate when extract embeddings
 
-            items["sub_bert"] = [torch.from_numpy(np.concatenate([sub_bert_embed[in_idx] for in_idx in e], axis=0))
-                                 for e in img_aligned_sub_indices]
+            items["sub_bert"] = \
+                [torch.from_numpy(
+                    np.concatenate(
+                        [sub_bert_embed[in_idx] for in_idx in e], axis=0)[:self.max_sub_l])
+                 for e in islice(img_aligned_sub_indices, self.max_vid_l)]
+
             aligned_sub_text = self.get_aligned_sub(self.sub_data[vid_name]["sub_text"],
                                                     img_aligned_sub_indices)
-            items["sub"] = [self.numericalize(e, eos=False) for e in aligned_sub_text]
+            # items["sub"] = [self.numericalize(e, eos=False)[:self.max_sub_l]
+            #                 for e in islice(aligned_sub_text, self.max_vid_l)]
         else:
             items["sub_bert"] = [torch.zeros(2, 2)] * 2
             items["sub"] = [torch.zeros(2, 2)] * 2
 
-        if self.vfeat_flag or self.vcpt_flag:
-            region_counts = self.vcpt_dict[vid_name]["counts"]  # full resolution
-            localized_lowered_region_counts = \
-                [min(region_counts[idx], self.num_region) for idx in indices][start_idx:end_idx+1]
-
-        # add vcpt
-        if self.vcpt_flag:
-            lower_res_obj_labels = get_elements_variable_length(
-                self.vcpt_dict[vid_name]["object"], indices, cnt_list=None, max_num_region=self.num_region)
-            obj_labels = lower_res_obj_labels
-            items["vcpt"] = self.numericalize_hier_vcpt(obj_labels)
-            items["object_labels"] = obj_labels
-        else:
-            items["vcpt"] = [[0, 0], [0, 0]]
-
-        # add visual feature
         if self.vfeat_flag:
+            region_counts = self.vcpt_dict[vid_name]["counts"]  # full resolution
+
             lowered_vfeat = get_elements_variable_length(
-                self.vid_h5[vid_name][:], indices, cnt_list=region_counts, max_num_region=self.num_region)
+                self.vid_h5[vid_name][:], indices, cnt_list=region_counts, max_num_region=self.max_num_regions)
             cur_vfeat = lowered_vfeat
 
-            items["vfeat"] = [torch.from_numpy(e) for e in cur_vfeat]
+            items["vfeat"] = [torch.from_numpy(e)[:self.max_vid_l] for e in cur_vfeat]
         else:
+            region_counts = None
             items["vfeat"] = [torch.zeros(2, 2)] * 2
 
         # add att
         inference = mode == "test"
-        if "answer_idx" in sample and self.use_sup_att and not inference and self.vfeat_flag:
-            q_ca_sentence = sample["q"] + " " + \
-                            sample["a{}".format(ca_idx)]
-            iou_data = self.get_iou_data(sample["bbox"], self.vcpt_dict[vid_name], frm_cnt)
-            items["att_labels"] = self.mk_att_label(
-                iou_data, q_ca_sentence, localized_lowered_region_counts, q_l + ca_l + 1,
-                iou_thd=self.att_iou_thd, single_box=inference)
+        if "answer_idx" in sample:
+            # add correct answer
+            ca_idx = int(sample["answer_idx"])
+            items["target"] = ca_idx
+            ca_l = sample["a{}_len".format(ca_idx)]
+
+            if self.use_sup_att and not inference and self.vfeat_flag:
+                q_ca_sentence = sample["q"] + " " + \
+                                sample["a{}".format(ca_idx)]
+                iou_data = self.get_iou_data(sample["bbox"], self.vcpt_dict[vid_name], frm_cnt)
+                localized_lowered_region_counts = \
+                    [min(region_counts[idx], self.max_num_regions) for idx in indices][start_idx:end_idx + 1]
+                items["att_labels"] = self.mk_att_label(
+                    iou_data, q_ca_sentence, localized_lowered_region_counts, q_l + ca_l + 1,
+                    iou_thd=self.att_iou_thd, single_box=inference)
+            else:
+                items["att_labels"] = None
         else:
-            items["att_labels"] = None
+            items["target"] = 999  # fake
 
         return items
 
@@ -438,54 +427,6 @@ class TVQACommonDataset:
                             for w in words]
         return sentence_indices
 
-    def build_word_vocabulary(self, text_keys, word_count_threshold=0):
-        """
-        borrowed this implementation from @karpathy's neuraltalk.
-        """
-        print("Building word vocabulary starts.\n")
-        all_sentences = []
-        for k in text_keys:
-            all_sentences.extend(self.raw_train[k])
-
-        word_counts = {}
-        for sentence in all_sentences:
-            for w in self.line_to_words(sentence, eos=False, downcase=True):
-                word_counts[w] = word_counts.get(w, 0) + 1
-
-        # vocab = [w for w in word_counts if word_counts[w] >= word_count_threshold]
-        vocab = [w for w in word_counts if word_counts[w] >= word_count_threshold and w not in self.word2idx.keys()]
-        print("Vocabulary Size %d (<pad> <unk> <eos> excluded) using word_count_threshold %d.\n" %
-              (len(vocab), word_count_threshold))
-
-        # build index and vocabularies
-        for idx, w in enumerate(vocab):
-            self.word2idx[w] = idx + self.offset
-            self.idx2word[idx + self.offset] = w
-
-        print("word2idx size: %d, idx2word size: %d.\n" % (len(self.word2idx), len(self.idx2word)))
-        # Make glove embedding.
-        print("Loading glove embedding at path : %s.\n" % self.glove_embedding_path)
-        glove_full = load_glove(self.glove_embedding_path)
-        print("Glove Loaded, building word2idx, idx2word mapping.\n")
-
-        glove_matrix = np.zeros([len(self.idx2word), self.embedding_dim])
-        glove_keys = glove_full.keys()
-        for i in tqdm(range(len(self.idx2word))):
-            w = self.idx2word[i]
-            w_embed = glove_full[w] if w in glove_keys else np.random.randn(self.embedding_dim) * 0.4
-            glove_matrix[i, :] = w_embed
-        self.vocab_embedding = glove_matrix
-        print("vocab embedding size is :", glove_matrix.shape)
-
-        print("Saving cache files at ./cache.\n")
-        if not os.path.exists("./cache"):
-            os.makedirs("./cache")
-        pickle.dump(self.word2idx, open(self.word2idx_path, 'w'))
-        pickle.dump(self.idx2word, open(self.idx2word_path, 'w'))
-        pickle.dump(glove_matrix, open(self.vocab_embedding_path, 'w'))
-
-        print("Building  vocabulary done.\n")
-
 
 def pad_sequence_3d_label(sequences, sequences_masks):
     """
@@ -593,12 +534,11 @@ def pad_collate(data):
     batch = dict()
     batch["qas"], batch["qas_mask"] = pad_sequences_2d([d["qas"] for d in data], dtype=torch.long)
     batch["qas_bert"], _ = pad_sequences_2d([d["qas_bert"] for d in data], dtype=torch.float)
-    batch["sub"], batch["sub_mask"] = pad_sequences_2d([d["sub"] for d in data], dtype=torch.long)
+    # batch["sub"], batch["sub_mask"] = pad_sequences_2d([d["sub"] for d in data], dtype=torch.long)
     batch["sub_bert"], _ = pad_sequences_2d([d["sub_bert"] for d in data], dtype=torch.float)
     batch["vid_name"] = [d["vid_name"] for d in data]  # inference
     batch["qid"] = torch.LongTensor([d["qid"] for d in data])  # inference
     batch["target"] = torch.tensor([d["target"] for d in data], dtype=torch.long)
-    batch["vcpt"], batch["vcpt_mask"] = pad_sequences_2d([d["vcpt"] for d in data], dtype=torch.long)
     batch["vid"], batch["vid_mask"] = pad_sequences_2d([d["vfeat"] for d in data], dtype=torch.float)
 
     if data[0]["att_labels"] is None:
@@ -619,18 +559,17 @@ def pad_collate(data):
     else:
         raise NotImplementedError
 
-    batch["ts"] = [d["ts"] for d in data]
     batch["image_indices"], batch["image_indices_mask"] = pad_sequences_1d([d["image_indices"] for d in data], dtype=torch.long)
     batch["q_l"] = torch.LongTensor([d["q_l"] for d in data])
 
-    if data[0]["boxes"] is not None:
-        batch["boxes"], batch["boxes_mask"] = pad_boxes_nested_sequences([d["boxes"] for d in data])
-    else:
-        batch["boxes"] = np.array([d["boxes"] for d in data], dtype=float)
-        batch["boxes"] = torch.tensor(batch["boxes"], dtype=torch.float)
-        batch["boxes_mask"] = batch["boxes"]
+    # if data[0]["boxes"] is not None:
+    #     batch["boxes"], batch["boxes_mask"] = pad_boxes_nested_sequences([d["boxes"] for d in data])
+    # else:
+    #     batch["boxes"] = np.array([d["boxes"] for d in data], dtype=float)
+    #     batch["boxes"] = torch.tensor(batch["boxes"], dtype=torch.float)
+    #     batch["boxes_mask"] = batch["boxes"]
+    batch["boxes_mask"] = batch["boxes"] = None
 
-    batch["object_labels"] = [d["object_labels"] for d in data]
     return batch
 
 

@@ -1,9 +1,19 @@
 import torch.nn as nn
 import torch.nn.functional as F
 
+from typing import NamedTuple
 from .position_encoding import PositionEncoding
 from .cnn import DepthwiseSeparableConv
 from .self_attention import MultiHeadedAttention
+
+
+class StackedEncoderConf(NamedTuple):
+    n_blocks: int = 7
+    n_conv: int = 2
+    kernel_size: int = 7
+    hidden_size: int = 128
+    dropout: float = 0.1
+    num_heads: int = 4
 
 
 class EncoderBlock(nn.Module):
@@ -53,15 +63,16 @@ class EncoderBlock(nn.Module):
 
 
 class StackedEncoder(nn.Module):
-    def __init__(self, n_blocks=7, n_conv=2, kernel_size=7, hidden_size=128, dropout=0.1, num_heads=4):
+    def __init__(self, stack_enc_conf: StackedEncoderConf):
         super(StackedEncoder, self).__init__()
 
-        self.n_blocks = n_blocks
-        self.stacked_encoderBlocks = nn.ModuleList([EncoderBlock(n_conv=n_conv,
-                                                                 kernel_size=kernel_size,
-                                                                 n_filters=hidden_size,
-                                                                 dropout=dropout,
-                                                                 num_heads=num_heads) for _ in range(n_blocks)])
+        self.n_blocks = stack_enc_conf.n_blocks
+        self.stacked_encoderBlocks = nn.ModuleList([EncoderBlock(n_conv=stack_enc_conf.n_conv,
+                                                                 kernel_size=stack_enc_conf.kernel_size,
+                                                                 n_filters=stack_enc_conf.hidden_size,
+                                                                 dropout=stack_enc_conf.dropout,
+                                                                 num_heads=stack_enc_conf.num_heads)
+                                                    for _ in range(stack_enc_conf.n_blocks)])
 
     def forward(self, x, mask):
         """
