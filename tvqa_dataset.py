@@ -1,18 +1,14 @@
 from __future__ import annotations
-import os
 import h5py
-import pickle
 import numpy as np
 import torch
 import copy
-from itertools import islice
 from typing import Optional
 from torch.utils.data.dataset import Dataset
-from tqdm import tqdm
-
+from pudb.remote import set_trace
 
 from utils import load_pickle, load_json, files_exist, get_all_img_ids, computeIoU, \
-    flat_list_of_lists, match_stanford_tokenizer, load_glove, get_elements_variable_length, dissect_by_lengths
+    flat_list_of_lists, match_stanford_tokenizer, get_elements_variable_length, dissect_by_lengths
 
 
 def filter_list_dicts(list_dicts, key, values):
@@ -38,13 +34,21 @@ class TVQASplitDataset(Dataset):
             self.raw_dset = filter_list_dicts(self.raw_dset, "vid_name", self.common_dset.vcpt_dict.keys())
 
         self.dset_len = len(self.raw_dset)
+        print(f"[{self.split_mode} dataset] {self.dset_len} samples")
 
     def __len__(self):
         return self.dset_len
 
     def __getitem__(self, index):
-        raw_dset_sample = self.raw_dset[index]
-        items = self.common_dset[(raw_dset_sample, self.split_mode)]
+        try:
+            raw_dset_sample = self.raw_dset[index]
+        except:
+            breakpoint()
+
+        try:
+            items = self.common_dset[(raw_dset_sample, self.split_mode)]
+        except:
+            breakpoint()
 
         return items
 
@@ -60,7 +64,7 @@ class SingletonMeta(type):
 
 class TVQACommonDataset(metaclass=SingletonMeta):
     def __init__(self, opt):
-        if opt.h5driver is "None":
+        if opt.h5driver == "None":
             opt.h5driver = None
         self.opt = opt
         self.sub_data = load_json(opt.sub_path)
@@ -89,9 +93,6 @@ class TVQACommonDataset(metaclass=SingletonMeta):
         self.word2idx = load_json(opt.word2idx_path)
         self.idx2word = {i: w for w, i in self.word2idx.items()}
 
-        self.max_sub_l = opt.max_sub_l
-        self.max_vid_l = opt.max_vid_l
-        self.max_qa_l = opt.max_qa_l
         self.max_num_regions = opt.num_region
 
     def __getitem__(self, key):
@@ -131,11 +132,11 @@ class TVQACommonDataset(metaclass=SingletonMeta):
         # add q-answers
         answer_keys = ["a0", "a1", "a2", "a3", "a4"]
         qa_sentences = [self.numericalize(sample["q"]
-                        + " " + sample[k], eos=False)[:self.max_qa_l] for k in answer_keys]
+                        + " " + sample[k], eos=False) for k in answer_keys]
         qa_sentences_bert = [
             torch.from_numpy(np.concatenate(
                 [self.qa_bert_h5[str(qid) + "_q"], self.qa_bert_h5[str(qid) + "_" + k]],
-                axis=0))[:self.max_qa_l, :]
+                axis=0))
             for k in answer_keys]
         q_l = sample["q_len"]
         items["q_l"] = q_l
@@ -160,13 +161,13 @@ class TVQACommonDataset(metaclass=SingletonMeta):
             items["sub_bert"] = \
                 [torch.from_numpy(
                     np.concatenate(
-                        [sub_bert_embed[in_idx] for in_idx in e], axis=0)[:self.max_sub_l])
-                 for e in islice(img_aligned_sub_indices, self.max_vid_l)]
+                        [sub_bert_embed[in_idx] for in_idx in e], axis=0))
+                 for e in img_aligned_sub_indices]
 
             aligned_sub_text = self.get_aligned_sub(self.sub_data[vid_name]["sub_text"],
                                                     img_aligned_sub_indices)
-            # items["sub"] = [self.numericalize(e, eos=False)[:self.max_sub_l]
-            #                 for e in islice(aligned_sub_text, self.max_vid_l)]
+            items["sub"] = [self.numericalize(e, eos=False)
+                            for e in aligned_sub_text]
         else:
             items["sub_bert"] = [torch.zeros(2, 2)] * 2
             items["sub"] = [torch.zeros(2, 2)] * 2
@@ -178,7 +179,7 @@ class TVQACommonDataset(metaclass=SingletonMeta):
                 self.vid_h5[vid_name][:], indices, cnt_list=region_counts, max_num_region=self.max_num_regions)
             cur_vfeat = lowered_vfeat
 
-            items["vfeat"] = [torch.from_numpy(e)[:self.max_vid_l] for e in cur_vfeat]
+            items["vfeat"] = [torch.from_numpy(e) for e in cur_vfeat]
         else:
             region_counts = None
             items["vfeat"] = [torch.zeros(2, 2)] * 2
@@ -527,6 +528,130 @@ def make_mask_from_length(lengths):
     return mask
 
 
+class PadCollate:
+    def __init__(self, opt):
+        self.max_len_dict = dict(
+            max_sub_l=opt.max_sub_l,
+            max_vid_l=opt.max_vid_l,
+            max_qa_l=opt.max_qa_l,
+            max_num_regions=opt.num_region
+        )
+
+    def limit_len(self, batch):
+        # qas (B, 5, #words, D)
+        max_qa_l = min(batch["qas"].shape[2], self.max_len_dict["max_qa_l"])
+        batch["qas"] = batch["qas"][:, :, :max_qa_l]
+        batch["qas_bert"] = batch["qas_bert"][:, :, :max_qa_l]
+        batch["qas_mask"] = batch["qas_mask"][:, :, :max_qa_l]
+
+        # (B, #imgs, #words, D)
+        batch["sub"] = batch["sub"][:, :self.max_len_dict["max_vid_l"], :self.max_len_dict["max_sub_l"]]
+        batch["sub_bert"] = batch["sub_bert"][:, :self.max_len_dict["max_vid_l"], :self.max_len_dict["max_sub_l"]]
+        batch["sub_mask"] = batch["sub_mask"][:, :self.max_len_dict["max_vid_l"], :self.max_len_dict["max_sub_l"]]
+
+        # context, vid (B, #imgs, #regions, D), vcpt (B, #imgs, #regions)
+        ctx_keys = ["vid"]
+        for k in ctx_keys:
+            max_l = min(batch[k].shape[1], self.max_len_dict["max_{}_l".format(k)])
+            batch[k] = batch[k][:, :max_l]
+            mask_key = "{}_mask".format(k)
+            batch[mask_key] = batch[mask_key][:, :max_l]
+
+        # att_label (B, #imgs, #qa_words, #regions)
+        if batch["att_labels"] is not None:
+            batch["att_labels"] = batch["att_labels"][:, :self.max_len_dict["max_vid_l"],
+                                  :self.max_len_dict["max_qa_l"], :self.max_len_dict["max_num_regions"]]
+            batch["att_labels_mask"] = batch["att_labels_mask"][:, :self.max_len_dict["max_vid_l"],
+                                       :self.max_len_dict["max_qa_l"], :self.max_len_dict["max_num_regions"]]
+        # batch["anno_st_idx"] = batch["anno_st_idx"]
+
+        if batch["ts_label"] is None:
+            batch["ts_label"] = None
+            batch["ts_label_mask"] = None
+        elif isinstance(batch["ts_label"], dict):  # (st_ed, ce)
+            batch["ts_label"] = dict(
+                st=batch["ts_label"]["st"],
+                ed=batch["ts_label"]["ed"]
+            )
+            batch["ts_label_mask"] = batch["ts_label_mask"][:, :self.max_len_dict["max_vid_l"]]
+        else:  # frm-wise or (st_ed, bce)
+            batch["ts_label"] = batch["ts_label"][:, :self.max_len_dict["max_vid_l"]]
+            batch["ts_label_mask"] = batch["ts_label_mask"][:, :self.max_len_dict["max_vid_l"]]
+
+        # target
+        # batch["target"] = batch["target"]
+
+        # others
+        # batch["qid"] = batch["qid"]
+        # model_in_dict["vid_name"] = batch["vid_name"]
+        batch["vid_name"] = None
+
+        # model_in_dict["ts"] = batch["ts"]  # $%#$%@#$^@#$^@$^?W?S?DFS?DF
+        # batch["q_l"] = batch["q_l"]
+        # batch["image_indices"] = batch["image_indices"]
+        # batch["image_indices_mask"] = batch["image_indices_mask"]
+
+        # if batch["boxes"].dim() == 1:
+        #     batch["boxes"] = batch["boxes"]
+        #     batch["boxes_mask"] = batch["boxes"]
+        # else:
+        #     batch["boxes"] = batch["boxes"][:, :self.max_len_dict["max_vid_l"], :self.max_len_dict["max_num_regions"], :]
+        #     batch["boxes_mask"] = batch["boxes_mask"][:, :self.max_len_dict["max_vid_l"], :self.max_len_dict["max_num_regions"]]
+
+        return batch
+
+    def pad_collate(self, data):
+        # separate source and target sequences
+        batch = dict()
+
+        batch["qas"], batch["qas_mask"] = pad_sequences_2d([d["qas"] for d in data], dtype=torch.long)
+        batch["qas_bert"], _ = pad_sequences_2d([d["qas_bert"] for d in data], dtype=torch.float)
+        batch["sub"], batch["sub_mask"] = pad_sequences_2d([d["sub"] for d in data], dtype=torch.long)
+        batch["sub_bert"], _ = pad_sequences_2d([d["sub_bert"] for d in data], dtype=torch.float)
+        batch["vid_name"] = [d["vid_name"] for d in data]  # inference
+        batch["qid"] = torch.LongTensor([d["qid"] for d in data])  # inference
+        batch["target"] = torch.tensor([d["target"] for d in data], dtype=torch.long)
+        batch["vid"], batch["vid_mask"] = pad_sequences_2d([d["vfeat"] for d in data], dtype=torch.float)
+
+        if data[0]["att_labels"] is None:
+            batch["att_labels"] = None
+        else:
+            batch["att_labels"], batch["att_labels_mask"] = pad_seq_of_seq_of_tensors([d["att_labels"] for d in data])
+        batch["anno_st_idx"] = torch.LongTensor([d["anno_st_idx"] for d in data])  # list(int) # $$$$
+        if data[0]["ts_label"] is None:
+            batch["ts_label"] = None
+        elif isinstance(data[0]["ts_label"], list):  # (st_ed, ce)
+            batch["ts_label"] = dict(
+                st=torch.LongTensor([d["ts_label"][0] for d in data]),
+                ed=torch.LongTensor([d["ts_label"][1] for d in data]),
+            )
+            batch["ts_label_mask"] = make_mask_from_length([len(d["image_indices"]) for d in data])
+        elif isinstance(data[0]["ts_label"], torch.Tensor):  # (st_ed, bce) or frm
+            batch["ts_label"], batch["ts_label_mask"] = pad_sequences_1d([d["ts_label"] for d in data],
+                                                                         dtype=torch.float)
+        else:
+            raise NotImplementedError
+
+        batch["image_indices"], batch["image_indices_mask"] = pad_sequences_1d([d["image_indices"] for d in data],
+                                                                               dtype=torch.long)
+        batch["q_l"] = torch.LongTensor([d["q_l"] for d in data])
+
+        # if data[0]["boxes"] is not None:
+        #     batch["boxes"], batch["boxes_mask"] = pad_boxes_nested_sequences([d["boxes"] for d in data])
+        # else:
+        #     batch["boxes"] = np.array([d["boxes"] for d in data], dtype=float)
+        #     batch["boxes"] = torch.tensor(batch["boxes"], dtype=torch.float)
+        #     batch["boxes_mask"] = batch["boxes"]
+        batch["boxes_mask"] = batch["boxes"] = None
+
+        batch = self.limit_len(batch)
+
+        return batch
+
+    def __call__(self, data):
+        return self.pad_collate(data)
+
+
 def pad_collate(data):
     """Creates mini-batch tensors from the list of tuples (src_seq, trg_seq).
     """
@@ -534,7 +659,7 @@ def pad_collate(data):
     batch = dict()
     batch["qas"], batch["qas_mask"] = pad_sequences_2d([d["qas"] for d in data], dtype=torch.long)
     batch["qas_bert"], _ = pad_sequences_2d([d["qas_bert"] for d in data], dtype=torch.float)
-    # batch["sub"], batch["sub_mask"] = pad_sequences_2d([d["sub"] for d in data], dtype=torch.long)
+    batch["sub"], batch["sub_mask"] = pad_sequences_2d([d["sub"] for d in data], dtype=torch.long)
     batch["sub_bert"], _ = pad_sequences_2d([d["sub_bert"] for d in data], dtype=torch.float)
     batch["vid_name"] = [d["vid_name"] for d in data]  # inference
     batch["qid"] = torch.LongTensor([d["qid"] for d in data])  # inference

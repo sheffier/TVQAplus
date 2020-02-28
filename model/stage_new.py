@@ -3,12 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import pytorch_lightning as pl
-import pprint
 import argparse
-from collections import defaultdict
 
 from torch.utils.data import DataLoader
-from tvqa_dataset import TVQACommonDataset, TVQASplitDataset, pad_collate
+from tvqa_dataset import TVQACommonDataset, TVQASplitDataset, pad_collate, PadCollate
 from .context_query_attention import StructuredAttentionWithDownsize
 from .encoder import StackedEncoder, StackedEncoderConf
 from .cnn import DepthwiseSeparableConv
@@ -57,22 +55,17 @@ class ConvLinear(nn.Module):
 
 
 class InputCommonEncoder(nn.Module):
-    def __init__(self, dropout, bridge_hsz, stacked_enc_conf: StackedEncoderConf):
+    def __init__(self, bridge_hsz, stacked_enc_conf: StackedEncoderConf):
         super().__init__()
 
         self.downsize_encoder = nn.Sequential(
-            nn.Dropout(dropout),
+            nn.Dropout(stacked_enc_conf.dropout),
             nn.Linear(bridge_hsz, stacked_enc_conf.hidden_size),
             nn.ReLU(True),
             nn.LayerNorm(stacked_enc_conf.hidden_size),
         )
 
-        self.stacked_encoder = StackedEncoder(n_blocks=stacked_enc_conf.n_blocks,
-                                              n_conv=stacked_enc_conf.n_conv,
-                                              kernel_size=stacked_enc_conf.kernel_size,
-                                              num_heads=stacked_enc_conf.num_heads,
-                                              hidden_size=stacked_enc_conf.hidden_size,
-                                              dropout=dropout)
+        self.stacked_encoder = StackedEncoder(stacked_enc_conf)
 
     def forward(self, x, mask):
         x_downsize = self.downsize_encoder(x)
@@ -80,7 +73,7 @@ class InputCommonEncoder(nn.Module):
 
 
 class InputTextEncoder(nn.Module):
-    def __init__(self, wd_size, bridge_hsz, stacked_enc_conf: StackedEncoderConf):
+    def __init__(self, wd_size, bridge_hsz, dropout, common_encoder):
         super().__init__()
 
         self.bert_word_encoding_fc = nn.Sequential(
@@ -91,7 +84,7 @@ class InputTextEncoder(nn.Module):
             nn.LayerNorm(bridge_hsz),
         )
 
-        self.common_encoder = InputCommonEncoder(bridge_hsz, stacked_enc_conf)
+        self.common_encoder = common_encoder
 
     def forward(self, x, mask):
         bert_encoding = self.bert_word_encoding_fc(x)
@@ -99,7 +92,7 @@ class InputTextEncoder(nn.Module):
 
 
 class InputVideoEncoder(nn.Module):
-    def __init__(self, vfeat_size, bridge_hsz, stacked_enc_conf: StackedEncoderConf):
+    def __init__(self, vfeat_size, bridge_hsz, dropout, common_encoder):
         super().__init__()
 
         self.vid_fc = nn.Sequential(
@@ -110,7 +103,7 @@ class InputVideoEncoder(nn.Module):
             nn.LayerNorm(bridge_hsz)
         )
 
-        self.common_encoder = InputCommonEncoder(dropout, bridge_hsz, stacked_enc_conf)
+        self.common_encoder = common_encoder
 
     def forward(self, x, mask):
         vid_encoding = self.vid_fc(x)
@@ -122,6 +115,7 @@ class ClassifierHeadMultiProposal(nn.Module):
         super().__init__()
 
         self.t_iter = t_iter
+        self.add_local = add_local
 
         self.cls_encoder = StackedEncoder(stacked_enc_conf)
 
@@ -130,7 +124,7 @@ class ClassifierHeadMultiProposal(nn.Module):
                 LinearWrapper(in_hsz=hsz,
                               out_hsz=hsz,
                               layer_norm=True,
-                              dropout=dropout,
+                              dropout=stacked_enc_conf.dropout,
                               relu=True)
             ] +
             [
@@ -138,7 +132,7 @@ class ClassifierHeadMultiProposal(nn.Module):
                            out_hsz=hsz,
                            kernel_size=3,
                            layer_norm=True,
-                           dropout=dropout,
+                           dropout=stacked_enc_conf.dropout,
                            relu=True)
                 for _ in range(t_iter)])
 
@@ -146,7 +140,7 @@ class ClassifierHeadMultiProposal(nn.Module):
             LinearWrapper(in_hsz=hsz,
                           out_hsz=1,
                           layer_norm=True,
-                          dropout=dropout,
+                          dropout=stacked_enc_conf.dropout,
                           relu=False)
             for _ in range(t_iter+1)])
 
@@ -154,14 +148,14 @@ class ClassifierHeadMultiProposal(nn.Module):
             LinearWrapper(in_hsz=hsz,
                           out_hsz=1,
                           layer_norm=True,
-                          dropout=dropout,
+                          dropout=stacked_enc_conf.dropout,
                           relu=False)
             for _ in range(t_iter+1)])
 
         self.classifier = LinearWrapper(in_hsz=hsz * 2 if add_local else hsz,
                                         out_hsz=1,
                                         layer_norm=True,
-                                        dropout=dropout,
+                                        dropout=stacked_enc_conf.dropout,
                                         relu=False)
 
     def residual_temporal_predictor(self, layer_idx, input_tensor):
@@ -327,6 +321,7 @@ class StageTrainer(pl.LightningModule):
         self.negative_pool_size = opt.negative_pool_size
         self.num_hard = opt.num_hard
         self.drop_topk = opt.drop_topk
+        self.extra_span_length = opt.extra_span_length
         self.att_loss_type = opt.att_loss_type
         self.margin = opt.margin
         self.alpha = opt.alpha
@@ -335,6 +330,8 @@ class StageTrainer(pl.LightningModule):
         self.flag_cnt = opt.flag_cnt
 
         self.wd_size = opt.embedding_size
+        self.use_hard_negatives = False
+        self.hard_negative_start = opt.hard_negative_start
 
         bridge_hsz = 300
 
@@ -345,10 +342,12 @@ class StageTrainer(pl.LightningModule):
                                                   hidden_size=self.hsz,
                                                   dropout=opt.dropout)
 
-        self.text_encoder = InputTextEncoder(opt.embedding_size, bridge_hsz, input_stack_enc_conf)
+        common_encoder = InputCommonEncoder(bridge_hsz, input_stack_enc_conf)
+
+        self.text_encoder = InputTextEncoder(opt.embedding_size, bridge_hsz, opt.dropout, common_encoder)
 
         if self.vfeat_flag:
-            self.vid_encoder = InputVideoEncoder(opt.vfeat_size, bridge_hsz, input_stack_enc_conf)
+            self.vid_encoder = InputVideoEncoder(opt.vfeat_size, bridge_hsz, opt.dropout, common_encoder)
 
         if self.flag_cnt == 2:
             self.concat_fc = nn.Sequential(
@@ -377,6 +376,10 @@ class StageTrainer(pl.LightningModule):
 
         self.criterion = nn.CrossEntropyLoss(reduction="sum")
 
+        self.pad_collate = PadCollate(opt)
+
+        self.scheduler = None
+
     def forward(self, batch):
         bsz = len(batch["qid"])
         num_a = batch["qas"].shape[1]
@@ -403,7 +406,7 @@ class StageTrainer(pl.LightningModule):
             attended_sub, attended_sub_mask, sub_raw_s, sub_normalized_s = \
                 self.qa_ctx_attn(a_embed, sub_embed, a_mask, sub_mask,
                                  noun_mask=None,
-                                 non_visual_vectors=None)
+                                 void_vector=None)
 
             # other_outputs["sub_normalized_s"] = sub_normalized_s
             # other_outputs["sub_raw_s"] = sub_raw_s
@@ -423,7 +426,7 @@ class StageTrainer(pl.LightningModule):
             attended_vid, attended_vid_mask, vid_raw_s, vid_normalized_s = \
                 self.qa_ctx_attn(a_embed, vid_embed, a_mask, vid_mask,
                                  noun_mask=None,
-                                 non_visual_vectors=None)
+                                 void_vector=None)
 
             # other_outputs["vid_normalized_s"] = vid_normalized_s
             # other_outputs["vid_raw_s"] = vid_raw_s
@@ -453,6 +456,18 @@ class StageTrainer(pl.LightningModule):
         # return out, target, att_predictions, t_scores
         return out, target, t_scores, vid_raw_s
 
+    def on_epoch_start(self):
+        if self.scheduler is None:
+            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.trainer.optimizers[0],
+                mode="max",
+                factor=0.5,
+                patience=10,
+                verbose=True
+            )
+
+        self.use_hard_negatives = self.current_epoch + 1 > self.hard_negative_start
+
     def training_step(self, batch, batch_idx):
         try:
             outputs, targets, t_scores, vid_raw_s = self.forward(batch)
@@ -472,7 +487,7 @@ class StageTrainer(pl.LightningModule):
                                           boxes=batch["boxes"],
                                           start_indices=start_indices,
                                           num_negatives=self.num_negatives,
-                                          use_hard_negatives=batch["use_hard_negatives"],
+                                          use_hard_negatives=self.use_hard_negatives,
                                           drop_topk=self.drop_topk)
                 except AssertionError as e:
                     print(e)
@@ -492,11 +507,12 @@ class StageTrainer(pl.LightningModule):
             # att_loss = att_loss.sum()
             # temporal_loss = temporal_loss.sum()
             cls_loss = self.criterion(outputs, targets)
+            qids = batch["qid"]
             # keep the cls_loss at the same magnitude as only classifying batch_size objects
             cls_loss = cls_loss * (1.0 * len(qids) / len(targets))
             loss = cls_loss + self.opt.att_weight * att_loss + self.opt.ts_weight * temporal_loss
 
-            return {'train_loss': loss}
+            return {'loss': loss}
         except RuntimeError as e:
             if "out of memory" in str(e):
                 print("WARNING: ran out of memory, skipping batch")
@@ -512,24 +528,41 @@ class StageTrainer(pl.LightningModule):
                                          answer_indices=batch["target"])
 
         # temporal_loss = temporal_loss.sum()
-        cls_loss = self.criterion(outputs, batch["targets"])
+        cls_loss = self.criterion(outputs, batch["target"])
         loss = cls_loss + self.opt.ts_weight * temporal_loss
 
         # measure accuracy and record loss
         pred_ids = outputs.argmax(dim=1, keepdim=True)
-        correct_ids = pred_ids.eq(batch["targets"].view_as(pred_ids)).sum().item()
+        targets = batch["target"]
+        correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum().item()
 
-        return {'valid_loss': loss, "valid_n_correct": correct_ids, "valid_n_ids": len(pred_ids)}
-        # return {'valid_loss': loss, "valid_acc_tuple": (correct_ids, len(pred_ids))}
+        return {'val_loss': loss, "valid_n_correct": correct_ids, "valid_n_ids": len(pred_ids)}
 
     def validation_end(self, outputs):
         # OPTIONAL
-        n_total_correct_ids = sum([n_correct for n_correct in outputs["valid_n_correct"]])
-        n_total_ids = sum([n_ids for n_ids in outputs["valid_n_ids"]])
-        # n_correct_ids_per_batch, n_ids_per_batch = [sum(elem) for elem in zip(*[x["valid_acc_tuple"] for x in outputs])]
+        val_loss_mean = 0
+        for output in outputs:
+            val_loss = output['val_loss']
+
+            # reduce manually when using dp
+            if self.trainer.use_dp or self.trainer.use_ddp2:
+                val_loss = torch.mean(val_loss)
+            val_loss_mean += val_loss
+
+        val_loss_mean /= len(outputs)
+
+        n_total_correct_ids = sum([out["valid_n_correct"] for out in outputs])
+        n_total_ids = sum([out["valid_n_ids"] for out in outputs])
+
         accuracy = float(n_total_correct_ids) / float(n_total_ids)
 
-        return {'valid_acc': accuracy}
+        if self.scheduler is not None:
+            self.scheduler.step(accuracy)
+
+        metric_dict = {'val_loss': val_loss_mean, 'val_acc': accuracy}
+        result = {'progress_bar': metric_dict, 'log': metric_dict}
+
+        return result
 
     # def test_step(self, batch, batch_idx):
     #     # OPTIONAL
@@ -546,15 +579,16 @@ class StageTrainer(pl.LightningModule):
             lr=self.opt.lr,
             weight_decay=self.opt.wd)
 
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="max",
-            factor=0.5,
-            patience=10,
-            verbose=True
-        )
-
-        return [optimizer], [scheduler]
+        return optimizer
+        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        #     optimizer,
+        #     mode="max",
+        #     factor=0.5,
+        #     patience=10,
+        #     verbose=True
+        # )
+        #
+        # return [optimizer], [scheduler]
 
     @pl.data_loader
     def train_dataloader(self):
@@ -565,14 +599,14 @@ class StageTrainer(pl.LightningModule):
         if self.use_ddp:
             train_sampler = torch.utils.data.distributed.DistributedSampler(
                 train_dset,
-                num_replicas=self.world_size,
-                rank=self.proc_rank
+                num_replicas=self.trainer.world_size,
+                rank=self.trainer.proc_rank
             )
         else:
             train_sampler = None
 
         train_loader = DataLoader(train_dset, batch_size=self.opt.bsz, shuffle=(train_sampler is None),
-                                  sampler=train_sampler, collate_fn=pad_collate,
+                                  sampler=train_sampler, collate_fn=self.pad_collate,
                                   num_workers=self.opt.num_workers, pin_memory=True)
 
         return train_loader
@@ -585,7 +619,7 @@ class StageTrainer(pl.LightningModule):
         valid_dset = TVQASplitDataset(common_dset, self.opt.valid_path, "valid")
 
         valid_loader = DataLoader(valid_dset, batch_size=self.opt.test_bsz, shuffle=False,
-                                  collate_fn=pad_collate, num_workers=self.opt.num_workers, pin_memory=True)
+                                  collate_fn=self.pad_collate, num_workers=self.opt.num_workers, pin_memory=True)
 
         return valid_loader
 
@@ -613,6 +647,62 @@ class StageTrainer(pl.LightningModule):
         loss_ed = self.criterion(ca_temporal_scores_st_ed[:, :, 1], ts_labels["ed"])
 
         return (loss_st + loss_ed) / 2.
+
+    @classmethod
+    def sample_negatives(cls, pred_score, pos_indices, neg_indices, num_negatives=2,
+                         use_hard_negatives=False, negative_pool_size=0, num_hard=2, drop_topk=0):
+        """ Sample negatives from a set of indices. Several sampling strategies are supported:
+        1, random; 2, hard negatives; 3, drop_topk hard negatives; 4, mix easy and hard negatives
+        5, sampling within a pool of hard negatives; 6, sample across images of the same video.
+        Args:
+            pred_score: (num_img, num_words, num_region)
+            pos_indices: (N_pos, 3) all positive region indices for the same word, not necessaryily the same image.
+            neg_indices: (N_neg, 3) ...
+            num_negatives (int):
+            use_hard_negatives (bool):
+            negative_pool_size (int):
+            num_hard (int):
+            drop_topk (int):
+        Returns:
+
+        """
+        num_unique_pos = len(pos_indices)
+        sampled_pos_indices = torch.cat([pos_indices] * num_negatives, dim=0)
+        if use_hard_negatives:
+            # print("using use_hard_negatives")
+            neg_scores = pred_score[neg_indices[:, 0], neg_indices[:, 1], neg_indices[:, 2]]  # TODO
+            max_indices = torch.sort(neg_scores, descending=True)[1].tolist()
+            if negative_pool_size > num_negatives:  # sample from a pool of hard negatives
+                hard_pool = max_indices[drop_topk:drop_topk + negative_pool_size]
+                hard_pool_indices = neg_indices[hard_pool]
+                num_hard_negs = num_negatives
+                sampled_easy_neg_indices = []
+                if num_hard < num_negatives:
+                    easy_pool = max_indices[drop_topk + negative_pool_size:]
+                    easy_pool_indices = neg_indices[easy_pool]
+                    num_hard_negs = num_hard
+                    num_easy_negs = num_negatives - num_hard_negs
+                    sampled_easy_neg_indices = easy_pool_indices[
+                        torch.randint(low=0, high=len(easy_pool_indices),
+                                      size=(num_easy_negs * num_unique_pos, ), dtype=torch.long)
+                    ]
+                sampled_hard_neg_indices = hard_pool_indices[
+                    torch.randint(low=0, high=len(hard_pool_indices),
+                                  size=(num_hard_negs * num_unique_pos, ), dtype=torch.long)
+                ]
+
+                if len(sampled_easy_neg_indices) != 0:
+                    sampled_neg_indices = torch.cat([sampled_hard_neg_indices, sampled_easy_neg_indices], dim=0)
+                else:
+                    sampled_neg_indices = sampled_hard_neg_indices
+
+            else:  # directly take the top negatives
+                sampled_neg_indices = neg_indices[max_indices[drop_topk:drop_topk+len(sampled_pos_indices)]]
+        else:
+            sampled_neg_indices = neg_indices[
+                torch.randint(low=0, high=len(neg_indices), size=(len(sampled_pos_indices),), dtype=torch.long)
+            ]
+        return sampled_pos_indices, sampled_neg_indices
 
     def get_att_loss(self, scores, att_labels, target, words, vid_names, qids, q_lens, img_indices, boxes,
                      start_indices, num_negatives=2, use_hard_negatives=False, drop_topk=0):
@@ -751,9 +841,9 @@ class StageTrainer(pl.LightningModule):
 
     @staticmethod
     def add_model_specific_args(parent_parser):  # pragma: no cover
-        parser = argparse.ArgumentParser(parents=[parent_parser])
+        parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
 
-        model_arg_parser = parser.add_argument_group("model", help="parser for model arguments")
+        model_arg_parser = parser.add_argument_group("model", description="parser for model arguments")
         model_arg_parser.add_argument("--t_iter", type=int, default=0,
                                       help="positive integer, indicating #iterations for refine temporal prediction")
         model_arg_parser.add_argument("--extra_span_length", type=int, default=3,
@@ -808,7 +898,7 @@ class StageTrainer(pl.LightningModule):
         model_arg_parser.add_argument("--cls_encoder_n_heads", type=int, default=0,
                                       help="number of self-attention heads, 0: do not use it")
 
-        data_arg_parser = parser.add_argument_group("data", help="parser for data arguments")
+        data_arg_parser = parser.add_argument_group("data", description="parser for data arguments")
         data_arg_parser.add_argument("--max_sub_l", type=int, default=50,
                                      help="maxmimum length of all sub sentence 97.71 under 50 for 3 sentences")
         data_arg_parser.add_argument("--max_vid_l", type=int, default=300,
@@ -843,12 +933,12 @@ class StageTrainer(pl.LightningModule):
                                           "`None` (default) - Use the standard HDF5 driver appropriate. "
                                           "`core` - load into RAM")
 
-        train_arg_parser = parser.add_argument_group("train", help="parser for training arguments")
+        train_arg_parser = parser.add_argument_group("train", description="parser for training arguments")
         train_arg_parser.add_argument("--gradient_clip_val", type=float, default=10., help="perform gradient clip")
         train_arg_parser.add_argument("--train_path", type=str)
         train_arg_parser.add_argument("--valid_path", type=str)
 
-        test_arg_parser = parser.add_argument_group("test", help="parser for test arguments")
+        test_arg_parser = parser.add_argument_group("test", description="parser for test arguments")
         test_arg_parser.add_argument("--eval_object_vocab_path", type=str)
         test_arg_parser.add_argument("--test_path", type=str)
 

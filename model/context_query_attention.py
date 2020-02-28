@@ -123,7 +123,7 @@ class StructuredAttentionWithDownsize(nn.Module):
         mixed = torch.cat([C,
                            u_a,
                            C * u_a], dim=-1)  # (N, 5, Li, Lqa, D)
-        mixed = self.c2q_down_projection(mixed)  # (N, 5, Li, Lqa, D)
+        mixed = self.down_projection(mixed)  # (N, 5, Li, Lqa, D)
         mixed_mask = (s_mask.sum(-1) != 0).float()  # (N, 5, Li, Lqa)
 
         return mixed, mixed_mask, raw_s, s_normalized
