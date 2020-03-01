@@ -34,7 +34,8 @@ def main(hparams):
                          gpus=hparams.device_ids,
                          distributed_backend=hparams.distributed_backend,
                          early_stop_callback=early_stop_callback,
-                         gradient_clip_val=hparams.gradient_clip_val)
+                         gradient_clip_val=hparams.gradient_clip_val,
+                         progress_bar_refresh_rate=hparams.progress_bar_refresh_rate)
     trainer.fit(model)
 
 
