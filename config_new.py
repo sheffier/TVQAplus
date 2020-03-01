@@ -22,8 +22,9 @@ class Config:
                                  help="num subprocesses used to load the data, 0: use main process")
         self.parser.add_argument("--seed", type=int, default=2018,
                                  help="random seed")
-        self.parser.add_argument("--log-interval", type=int, default=800,
-                                 help="number batches which the training loss is logged, default is 800")
+        self.parser.add_argument("--val_check_interval", type=float, default=1.0,
+                                 help="(float|int): How often within one training epoch to check the validation set."
+                                      "If float, '%' of tng epoch. If int, check every n batch")
         self.parser.add_argument("--checkpoint-interval", type=int, default=-1,
                                  help="number of batches after which a checkpoint of the trained model will be created."
                                       " When set to -1 (default) checkpoint is disabled")
@@ -47,5 +48,12 @@ class Config:
 
         if opt.distributed_backend is not None and opt.distributed_backend == 'ddp':
             opt.num_workers = 0
+
+        if opt.val_check_interval.is_integer() and opt.val_check_interval > 1:
+            opt.val_check_interval = int(opt.val_check_interval)
+        else:
+            if not 0. <= opt.val_check_interval <= 1.:
+                msg = f"`val_check_interval` must lie in the range [0.0, 1.0], but got {opt.val_check_interval:.3f}."
+                raise ValueError(msg)
 
         return opt

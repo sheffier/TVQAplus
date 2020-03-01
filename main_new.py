@@ -28,7 +28,9 @@ def main(opt):
         mode='max'
     )
 
-    trainer = pl.Trainer(default_save_path=opt.save_model_dir,
+    trainer = pl.Trainer(max_epochs=opt.n_epoch,
+                         val_check_interval=opt.val_check_interval,
+                         default_save_path=opt.save_model_dir,
                          gpus=opt.device_ids,
                          distributed_backend=opt.distributed_backend,
                          early_stop_callback=early_stop_callback,
