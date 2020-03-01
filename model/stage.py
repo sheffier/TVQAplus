@@ -5,6 +5,7 @@ import numpy as np
 import pytorch_lightning as pl
 import argparse
 
+from argparse import Namespace
 from torch.utils.data import DataLoader
 from tvqa_dataset import TVQACommonDataset, TVQASplitDataset, pad_collate, PadCollate
 from .context_query_attention import StructuredAttentionWithDownsize
@@ -312,7 +313,23 @@ class ClassifierHeadMultiProposal(nn.Module):
 class StageTrainer(pl.LightningModule):
     def __init__(self, hparams):
         super().__init__()
-        self.hparams = hparams
+
+        self.hparams = {}
+        for k, v in vars(hparams).items():
+            if isinstance(v, list):
+                if isinstance(v[0], int):
+                    self.hparams[k] = torch.IntTensor(v)
+                elif isinstance(v[0], float):
+                    self.hparams[k] = torch.FloatTensor(v)
+                else:
+                    raise ValueError("hparams: only list of floats or ints is supported")
+            elif isinstance(v, (int, float, str, bool, torch.Tensor)):
+                self.hparams[k] = v
+            else:
+                raise ValueError("hparams: unsupported type")
+
+        self.hparams = Namespace(**self.hparams)
+
         self.inference_mode = False
         self.sub_flag = hparams.sub_flag
         self.vfeat_flag = hparams.vfeat_flag
@@ -912,14 +929,6 @@ class StageTrainer(pl.LightningModule):
                                      help="maxmimum length of answer, 98.20% under 15")
         data_arg_parser.add_argument("--max_qa_l", type=int, default=40,
                                      help="maxmimum length of answer, 99.7% <= 40")
-        data_arg_parser.add_argument("--input_streams", type=str, nargs="+", default=["sub", "vfeat"],
-                                     choices=["sub", "vfeat"],
-                                     help="input streams for the model. can use one or both of the available streams "
-                                          "(`vfeat`, `sub`)")
-        data_arg_parser.add_argument("--vfeat_type", type=str, help="video feature type",
-                                     choices=["imagenet_hq", "imagenet_hq_pca", "tsn_rgb_hq", "tsn_rgb_hq_pca",
-                                              "tsn_flow", "tsn_flow_pca", "det_hq", "det_hq_pca", "det_hq_rm_dup",
-                                              "det_hq_20_100", "det_hq_20_100_pca"])
         data_arg_parser.add_argument("--word2idx_path", type=str)
         data_arg_parser.add_argument("--qa_bert_path", type=str, default="")
         data_arg_parser.add_argument("--sub_bert_path", type=str, default="")
@@ -940,7 +949,25 @@ class StageTrainer(pl.LightningModule):
         train_arg_parser.add_argument("--valid_path", type=str)
 
         test_arg_parser = parser.add_argument_group("test", description="parser for test arguments")
-        test_arg_parser.add_argument("--eval_object_vocab_path", type=str)
-        test_arg_parser.add_argument("--test_path", type=str)
+        # test_arg_parser.add_argument("--eval_object_vocab_path", type=str)
+        test_arg_parser.add_argument("--test_path", type=str, default="")
 
         return parser
+
+    @staticmethod
+    def verify_hparams(hparams):
+        v_feat_valid = not (('vfeat_path' in hparams) ^ ('vcpt_path' in hparams))
+        if not v_feat_valid:
+            msg = f"'vfeat_path' and 'vcpt_path' should be both valid or empty"
+            raise ValueError(msg)
+        hparams.vfeat_flag = 'vfeat_path' in hparams
+
+        sub_feat_valid = not (('sub_path' in hparams) ^ ('sub_bert_path' in hparams))
+        if not sub_feat_valid:
+            msg = f"'sub_path' and 'sub_bert_path' should be both valid or empty"
+            raise ValueError(msg)
+        hparams.sub_flag = 'sub_path' in hparams
+
+        hparams.concat_ctx = hparams.vfeat_flag and hparams.sub_flag
+
+        return hparams

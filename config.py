@@ -11,10 +11,10 @@ class Config:
 
         self.parser.add_argument("--save-model-dir", type=str, required=True,
                                  help="path to folder where trained model will be saved.")
-        self.parser.add_argument("--checkpoint-model-dir", type=str, default=None,
+        self.parser.add_argument("--checkpoint-model-dir", type=str, default="",
                                  help="path to folder where checkpoints of trained models will be saved")
         self.parser.add_argument("--device_ids", type=int, nargs="+", default=[0], help="GPU ids to run the job")
-        self.parser.add_argument('--distributed-backend', type=str, default=None, choices=('dp', 'ddp', 'ddp2'),
+        self.parser.add_argument('--distributed-backend', type=str, default='', choices=('dp', 'ddp', 'ddp2'),
                                  help='supports three options dp, ddp, ddp2')
         self.parser.add_argument("--cuda", type=int, required=True,
                                  help="set it to 1 for running on GPU, 0 for CPU")
@@ -42,11 +42,8 @@ class Config:
 
     def parse(self):
         hparams = self.parser.parse_args()
-        hparams.vfeat_flag = "vfeat" in hparams.input_streams
-        hparams.sub_flag = "sub" in hparams.input_streams
-        hparams.concat_ctx = len(hparams.input_streams) == 2
 
-        if hparams.distributed_backend is not None and hparams.distributed_backend == 'ddp':
+        if hparams.distributed_backend != '' and hparams.distributed_backend == 'ddp':
             hparams.num_workers = 0
 
         if hparams.val_check_interval.is_integer() and hparams.val_check_interval > 1:

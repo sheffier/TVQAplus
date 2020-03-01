@@ -68,9 +68,8 @@ class TVQACommonDataset(metaclass=SingletonMeta):
             hparams.h5driver = None
         self.hparams = hparams
         self.sub_data = load_json(hparams.sub_path)
-        self.sub_flag = "sub" in hparams.input_streams
-        self.vfeat_flag = "vfeat" in hparams.input_streams
-        self.vfeat_type = hparams.vfeat_type
+        self.sub_flag = hparams.sub_flag
+        self.vfeat_flag = hparams.vfeat_flag
         self.qa_bert_h5 = None
         if self.sub_flag:
             self.sub_bert_h5 = None

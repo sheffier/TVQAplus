@@ -41,5 +41,6 @@ def main(hparams):
 if __name__ == '__main__':
     parser = Config().get_parser(StageTrainer)
     hparams = parser.parse()
+    hparams = StageTrainer.verify_hparams(hparams)
 
     main(hparams)
