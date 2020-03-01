@@ -41,19 +41,19 @@ class Config:
         return self
 
     def parse(self):
-        opt = self.parser.parse_args()
-        opt.vfeat_flag = "vfeat" in opt.input_streams
-        opt.sub_flag = "sub" in opt.input_streams
-        opt.concat_ctx = len(opt.input_streams) == 2
+        hparams = self.parser.parse_args()
+        hparams.vfeat_flag = "vfeat" in hparams.input_streams
+        hparams.sub_flag = "sub" in hparams.input_streams
+        hparams.concat_ctx = len(hparams.input_streams) == 2
 
-        if opt.distributed_backend is not None and opt.distributed_backend == 'ddp':
-            opt.num_workers = 0
+        if hparams.distributed_backend is not None and hparams.distributed_backend == 'ddp':
+            hparams.num_workers = 0
 
-        if opt.val_check_interval.is_integer() and opt.val_check_interval > 1:
-            opt.val_check_interval = int(opt.val_check_interval)
+        if hparams.val_check_interval.is_integer() and hparams.val_check_interval > 1:
+            hparams.val_check_interval = int(hparams.val_check_interval)
         else:
-            if not 0. <= opt.val_check_interval <= 1.:
-                msg = f"`val_check_interval` must lie in the range [0.0, 1.0], but got {opt.val_check_interval:.3f}."
+            if not 0. <= hparams.val_check_interval <= 1.:
+                msg = f"`val_check_interval` must lie in the range [0.0, 1.0], but got {hparams.val_check_interval:.3f}."
                 raise ValueError(msg)
 
-        return opt
+        return hparams

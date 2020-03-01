@@ -310,73 +310,73 @@ class ClassifierHeadMultiProposal(nn.Module):
 
 
 class StageTrainer(pl.LightningModule):
-    def __init__(self, opt):
+    def __init__(self, hparams):
         super().__init__()
-        self.opt = opt
+        self.hparams = hparams
         self.inference_mode = False
-        self.sub_flag = opt.sub_flag
-        self.vfeat_flag = opt.vfeat_flag
-        self.use_sup_att = opt.use_sup_att
-        self.num_negatives = opt.num_negatives
-        self.negative_pool_size = opt.negative_pool_size
-        self.num_hard = opt.num_hard
-        self.drop_topk = opt.drop_topk
-        self.extra_span_length = opt.extra_span_length
-        self.att_loss_type = opt.att_loss_type
-        self.margin = opt.margin
-        self.alpha = opt.alpha
-        self.hsz = opt.hsz
+        self.sub_flag = hparams.sub_flag
+        self.vfeat_flag = hparams.vfeat_flag
+        self.use_sup_att = hparams.use_sup_att
+        self.num_negatives = hparams.num_negatives
+        self.negative_pool_size = hparams.negative_pool_size
+        self.num_hard = hparams.num_hard
+        self.drop_topk = hparams.drop_topk
+        self.extra_span_length = hparams.extra_span_length
+        self.att_loss_type = hparams.att_loss_type
+        self.margin = hparams.margin
+        self.alpha = hparams.alpha
+        self.hsz = hparams.hsz
         # self.num_a = 5
-        self.concat_ctx = opt.concat_ctx
+        self.concat_ctx = hparams.concat_ctx
 
-        self.wd_size = opt.embedding_size
+        self.wd_size = hparams.embedding_size
         self.use_hard_negatives = False
-        self.hard_negative_start = opt.hard_negative_start
+        self.hard_negative_start = hparams.hard_negative_start
 
         bridge_hsz = 300
 
-        input_stack_enc_conf = StackedEncoderConf(n_blocks=opt.input_encoder_n_blocks,
-                                                  n_conv=opt.input_encoder_n_conv,
-                                                  kernel_size=opt.input_encoder_kernel_size,
-                                                  num_heads=opt.input_encoder_n_heads,
+        input_stack_enc_conf = StackedEncoderConf(n_blocks=hparams.input_encoder_n_blocks,
+                                                  n_conv=hparams.input_encoder_n_conv,
+                                                  kernel_size=hparams.input_encoder_kernel_size,
+                                                  num_heads=hparams.input_encoder_n_heads,
                                                   hidden_size=self.hsz,
-                                                  dropout=opt.dropout)
+                                                  dropout=hparams.dropout)
 
         common_encoder = InputCommonEncoder(bridge_hsz, input_stack_enc_conf)
 
-        self.text_encoder = InputTextEncoder(opt.embedding_size, bridge_hsz, opt.dropout, common_encoder)
+        self.text_encoder = InputTextEncoder(hparams.embedding_size, bridge_hsz, hparams.dropout, common_encoder)
 
         if self.vfeat_flag:
-            self.vid_encoder = InputVideoEncoder(opt.vfeat_size, bridge_hsz, opt.dropout, common_encoder)
+            self.vid_encoder = InputVideoEncoder(hparams.vfeat_size, bridge_hsz, hparams.dropout, common_encoder)
 
         if self.concat_ctx:
             self.concat_fc = nn.Sequential(
-                nn.LayerNorm(3 * opt.hsz),
-                nn.Dropout(opt.dropout),
-                nn.Linear(3 * opt.hsz, opt.hsz),
+                nn.LayerNorm(3 * hparams.hsz),
+                nn.Dropout(hparams.dropout),
+                nn.Linear(3 * hparams.hsz, hparams.hsz),
                 nn.ReLU(True),
-                nn.LayerNorm(opt.hsz),
+                nn.LayerNorm(hparams.hsz),
             )
 
         self.qa_ctx_attn = StructuredAttentionWithDownsize(
-            opt.hsz,
-            dropout=opt.dropout,
-            scale=opt.scale,
-            add_void=opt.add_non_visual)  # no parameters inside
+            hparams.hsz,
+            dropout=hparams.dropout,
+            scale=hparams.scale,
+            add_void=hparams.add_non_visual)  # no parameters inside
 
-        cls_stack_enc_conf = StackedEncoderConf(n_blocks=opt.cls_encoder_n_blocks,
-                                                n_conv=opt.cls_encoder_n_conv,
-                                                kernel_size=opt.cls_encoder_kernel_size,
-                                                num_heads=opt.cls_encoder_n_heads,
+        cls_stack_enc_conf = StackedEncoderConf(n_blocks=hparams.cls_encoder_n_blocks,
+                                                n_conv=hparams.cls_encoder_n_conv,
+                                                kernel_size=hparams.cls_encoder_kernel_size,
+                                                num_heads=hparams.cls_encoder_n_heads,
                                                 hidden_size=self.hsz,
-                                                dropout=opt.dropout)
+                                                dropout=hparams.dropout)
 
-        self.classfier_head_multi_proposal = ClassifierHeadMultiProposal(cls_stack_enc_conf, opt.hsz,
-                                                                         opt.add_local, opt.t_iter)
+        self.classfier_head_multi_proposal = ClassifierHeadMultiProposal(cls_stack_enc_conf, hparams.hsz,
+                                                                         hparams.add_local, hparams.t_iter)
 
         self.criterion = nn.CrossEntropyLoss(reduction="mean")
 
-        self.pad_collate = PadCollate(opt)
+        self.pad_collate = PadCollate(hparams)
 
         self.scheduler = None
 
@@ -511,7 +511,7 @@ class StageTrainer(pl.LightningModule):
             qids = batch["qid"]
             # keep the cls_loss at the same magnitude as only classifying batch_size objects
             cls_loss = cls_loss * (1.0 * len(qids) / len(targets))
-            loss = cls_loss + self.opt.att_weight * att_loss + self.opt.ts_weight * temporal_loss
+            loss = cls_loss + self.hparams.att_weight * att_loss + self.hparams.ts_weight * temporal_loss
 
             return {'loss': loss}
         except RuntimeError as e:
@@ -530,7 +530,7 @@ class StageTrainer(pl.LightningModule):
 
         # temporal_loss = temporal_loss.sum()
         cls_loss = self.criterion(outputs, batch["target"])
-        loss = cls_loss + self.opt.ts_weight * temporal_loss
+        loss = cls_loss + self.hparams.ts_weight * temporal_loss
 
         # measure accuracy and record loss
         pred_ids = outputs.argmax(dim=1, keepdim=True)
@@ -577,8 +577,8 @@ class StageTrainer(pl.LightningModule):
         # REQUIRED
         optimizer = torch.optim.Adam(
             [p for p in self.parameters() if p.requires_grad],
-            lr=self.opt.lr,
-            weight_decay=self.opt.wd)
+            lr=self.hparams.lr,
+            weight_decay=self.hparams.wd)
 
         return optimizer
         # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -593,9 +593,9 @@ class StageTrainer(pl.LightningModule):
 
     @pl.data_loader
     def train_dataloader(self):
-        common_dset = TVQACommonDataset(self.opt)
-        train_dset = TVQASplitDataset(common_dset, self.opt.train_path, "train")
-        # self.opt.vocab_size = len(common_dset.word2idx)
+        common_dset = TVQACommonDataset(self.hparams)
+        train_dset = TVQASplitDataset(common_dset, self.hparams.train_path, "train")
+        # self.hparams.vocab_size = len(common_dset.word2idx)
 
         if self.use_ddp:
             train_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -606,9 +606,9 @@ class StageTrainer(pl.LightningModule):
         else:
             train_sampler = None
 
-        train_loader = DataLoader(train_dset, batch_size=self.opt.bsz, shuffle=(train_sampler is None),
+        train_loader = DataLoader(train_dset, batch_size=self.hparams.bsz, shuffle=(train_sampler is None),
                                   sampler=train_sampler, collate_fn=self.pad_collate,
-                                  num_workers=self.opt.num_workers, pin_memory=True)
+                                  num_workers=self.hparams.num_workers, pin_memory=True)
 
         return train_loader
 
@@ -616,11 +616,11 @@ class StageTrainer(pl.LightningModule):
     def val_dataloader(self):
         # OPTIONAL
         # can also return a list of val dataloaders
-        common_dset = TVQACommonDataset(self.opt)
-        valid_dset = TVQASplitDataset(common_dset, self.opt.valid_path, "valid")
+        common_dset = TVQACommonDataset(self.hparams)
+        valid_dset = TVQASplitDataset(common_dset, self.hparams.valid_path, "valid")
 
-        valid_loader = DataLoader(valid_dset, batch_size=self.opt.test_bsz, shuffle=False,
-                                  collate_fn=self.pad_collate, num_workers=self.opt.num_workers, pin_memory=True)
+        valid_loader = DataLoader(valid_dset, batch_size=self.hparams.test_bsz, shuffle=False,
+                                  collate_fn=self.pad_collate, num_workers=self.hparams.num_workers, pin_memory=True)
 
         return valid_loader
 

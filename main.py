@@ -8,38 +8,38 @@ from model.stage import StageTrainer
 from utils import count_parameters
 
 
-def main(opt):
+def main(hparams):
     # init model
 
-    if opt.seed is not None:
-        random.seed(opt.seed)
-        torch.manual_seed(opt.seed)
+    if hparams.seed is not None:
+        random.seed(hparams.seed)
+        torch.manual_seed(hparams.seed)
         cudnn.benchmark = False
         cudnn.deterministic = True
 
-    model = StageTrainer(opt)
+    model = StageTrainer(hparams)
 
     count_parameters(model)
 
     early_stop_callback = EarlyStopping(
         monitor='val_acc',
-        patience=opt.max_es_cnt,
+        patience=hparams.max_es_cnt,
         verbose=True,
         mode='max'
     )
 
-    trainer = pl.Trainer(max_epochs=opt.n_epoch,
-                         val_check_interval=opt.val_check_interval,
-                         default_save_path=opt.save_model_dir,
-                         gpus=opt.device_ids,
-                         distributed_backend=opt.distributed_backend,
+    trainer = pl.Trainer(max_epochs=hparams.n_epoch,
+                         val_check_interval=hparams.val_check_interval,
+                         default_save_path=hparams.save_model_dir,
+                         gpus=hparams.device_ids,
+                         distributed_backend=hparams.distributed_backend,
                          early_stop_callback=early_stop_callback,
-                         gradient_clip_val=opt.gradient_clip_val)
+                         gradient_clip_val=hparams.gradient_clip_val)
     trainer.fit(model)
 
 
 if __name__ == '__main__':
     parser = Config().get_parser(StageTrainer)
-    opt = parser.parse()
+    hparams = parser.parse()
 
-    main(opt)
+    main(hparams)

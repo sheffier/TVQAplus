@@ -63,46 +63,46 @@ class SingletonMeta(type):
 
 
 class TVQACommonDataset(metaclass=SingletonMeta):
-    def __init__(self, opt):
-        if opt.h5driver == "None":
-            opt.h5driver = None
-        self.opt = opt
-        self.sub_data = load_json(opt.sub_path)
-        self.sub_flag = "sub" in opt.input_streams
-        self.vfeat_flag = "vfeat" in opt.input_streams
-        self.vfeat_type = opt.vfeat_type
+    def __init__(self, hparams):
+        if hparams.h5driver == "None":
+            hparams.h5driver = None
+        self.hparams = hparams
+        self.sub_data = load_json(hparams.sub_path)
+        self.sub_flag = "sub" in hparams.input_streams
+        self.vfeat_flag = "vfeat" in hparams.input_streams
+        self.vfeat_type = hparams.vfeat_type
         self.qa_bert_h5 = None
         if self.sub_flag:
             self.sub_bert_h5 = None
         if self.vfeat_flag:
             self.vid_h5 = None
-            self.vcpt_dict = load_pickle(opt.vcpt_path) if opt.vcpt_path.endswith(".pickle") \
-                else load_json(opt.vcpt_path)
+            self.vcpt_dict = load_pickle(hparams.vcpt_path) if hparams.vcpt_path.endswith(".pickle") \
+                else load_json(hparams.vcpt_path)
 
-        self.use_sup_att = opt.use_sup_att
-        self.att_iou_thd = opt.att_iou_thd
+        self.use_sup_att = hparams.use_sup_att
+        self.att_iou_thd = hparams.att_iou_thd
 
         # tmp
-        self.frm_cnt_path = opt.frm_cnt_path
+        self.frm_cnt_path = hparams.frm_cnt_path
         self.frm_cnt_dict = load_json(self.frm_cnt_path)
 
         # build/load vocabulary
-        assert files_exist([opt.word2idx_path]), "\nNo cache founded."
+        assert files_exist([hparams.word2idx_path]), "\nNo cache founded."
 
         print("\nLoading cache ...")
-        self.word2idx = load_json(opt.word2idx_path)
+        self.word2idx = load_json(hparams.word2idx_path)
         self.idx2word = {i: w for w, i in self.word2idx.items()}
 
-        self.max_num_regions = opt.num_region
+        self.max_num_regions = hparams.num_region
 
     def __getitem__(self, key):
         sample, mode = key
         if self.qa_bert_h5 is None:
-            self.qa_bert_h5 = h5py.File(self.opt.qa_bert_path, "r", driver=self.opt.h5driver)  # qid + key
+            self.qa_bert_h5 = h5py.File(self.hparams.qa_bert_path, "r", driver=self.hparams.h5driver)  # qid + key
         if self.sub_flag and self.sub_bert_h5 is None:
-            self.sub_bert_h5 = h5py.File(self.opt.sub_bert_path, "r", driver=self.opt.h5driver)  # vid_name
+            self.sub_bert_h5 = h5py.File(self.hparams.sub_bert_path, "r", driver=self.hparams.h5driver)  # vid_name
         if self.vfeat_flag and self.vid_h5 is None:
-            self.vid_h5 = h5py.File(self.opt.vfeat_path, "r", driver=self.opt.h5driver)  # add core
+            self.vid_h5 = h5py.File(self.hparams.vfeat_path, "r", driver=self.hparams.h5driver)  # add core
 
         # 0.5 fps mode
         items = dict()
@@ -529,12 +529,12 @@ def make_mask_from_length(lengths):
 
 
 class PadCollate:
-    def __init__(self, opt):
+    def __init__(self, hparams):
         self.max_len_dict = dict(
-            max_sub_l=opt.max_sub_l,
-            max_vid_l=opt.max_vid_l,
-            max_qa_l=opt.max_qa_l,
-            max_num_regions=opt.num_region
+            max_sub_l=hparams.max_sub_l,
+            max_vid_l=hparams.max_vid_l,
+            max_qa_l=hparams.max_qa_l,
+            max_num_regions=hparams.num_region
         )
 
     def limit_len(self, batch):
