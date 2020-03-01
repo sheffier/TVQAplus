@@ -3,8 +3,8 @@ import torch
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping
 import torch.backends.cudnn as cudnn
-from config_new import Config
-from model.stage_new import StageTrainer
+from config import Config
+from model.stage import StageTrainer
 from utils import count_parameters
 
 
