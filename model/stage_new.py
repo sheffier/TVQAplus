@@ -327,7 +327,7 @@ class StageTrainer(pl.LightningModule):
         self.alpha = opt.alpha
         self.hsz = opt.hsz
         # self.num_a = 5
-        self.flag_cnt = opt.flag_cnt
+        self.concat_ctx = opt.concat_ctx
 
         self.wd_size = opt.embedding_size
         self.use_hard_negatives = False
@@ -349,7 +349,7 @@ class StageTrainer(pl.LightningModule):
         if self.vfeat_flag:
             self.vid_encoder = InputVideoEncoder(opt.vfeat_size, bridge_hsz, opt.dropout, common_encoder)
 
-        if self.flag_cnt == 2:
+        if self.concat_ctx:
             self.concat_fc = nn.Sequential(
                 nn.LayerNorm(3 * opt.hsz),
                 nn.Dropout(opt.dropout),
@@ -374,7 +374,7 @@ class StageTrainer(pl.LightningModule):
         self.classfier_head_multi_proposal = ClassifierHeadMultiProposal(cls_stack_enc_conf, opt.hsz,
                                                                          opt.add_local, opt.t_iter)
 
-        self.criterion = nn.CrossEntropyLoss(reduction="sum")
+        self.criterion = nn.CrossEntropyLoss(reduction="mean")
 
         self.pad_collate = PadCollate(opt)
 
@@ -431,10 +431,11 @@ class StageTrainer(pl.LightningModule):
             # other_outputs["vid_normalized_s"] = vid_normalized_s
             # other_outputs["vid_raw_s"] = vid_raw_s
 
-        if self.flag_cnt == 2:
-            cls_input_emb = torch.cat([attended_sub,
-                                       attended_vid,
-                                       attended_sub * attended_vid], dim=-1)  # (N, 5, Li, Lqa, 3D)
+        if self.concat_ctx:
+            concat_input_emb = torch.cat([attended_sub,
+                                          attended_vid,
+                                          attended_sub * attended_vid], dim=-1)  # (N, 5, Li, Lqa, 3D)
+            cls_input_emb = self.concat_fc(concat_input_emb)
             cls_input_mask = attended_vid_mask
         elif self.sub_flag:
             cls_input_emb = attended_sub

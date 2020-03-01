@@ -43,7 +43,7 @@ class Config:
         opt = self.parser.parse_args()
         opt.vfeat_flag = "vfeat" in opt.input_streams
         opt.sub_flag = "sub" in opt.input_streams
-        opt.flag_cnt = len(opt.input_streams) == 2
+        opt.concat_ctx = len(opt.input_streams) == 2
 
         if opt.distributed_backend is not None and opt.distributed_backend == 'ddp':
             opt.num_workers = 0
