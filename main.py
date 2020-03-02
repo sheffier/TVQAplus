@@ -4,7 +4,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping
 import torch.backends.cudnn as cudnn
 from config import Config
-from model.stage import StageTrainer
+from model.stage import Stage
 from utils import count_parameters
 
 
@@ -17,7 +17,7 @@ def main(hparams):
         cudnn.benchmark = False
         cudnn.deterministic = True
 
-    model = StageTrainer(hparams)
+    model = Stage(hparams)
 
     count_parameters(model)
 
@@ -40,8 +40,8 @@ def main(hparams):
 
 
 if __name__ == '__main__':
-    parser = Config().get_parser(StageTrainer)
+    parser = Config().get_parser(Stage)
     hparams = parser.parse()
-    hparams = StageTrainer.verify_hparams(hparams)
+    hparams = Stage.verify_hparams(hparams)
 
     main(hparams)

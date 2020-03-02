@@ -310,7 +310,7 @@ class ClassifierHeadMultiProposal(nn.Module):
         return answer_scores, targets, temporal_scores_st_ed  # (N_new, 5), (N_new, ) (N, 5, Li, 2)
 
 
-class StageTrainer(pl.LightningModule):
+class Stage(pl.LightningModule):
     def __init__(self, hparams):
         super().__init__()
 
