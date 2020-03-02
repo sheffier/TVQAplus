@@ -563,7 +563,7 @@ class StageTrainer(pl.LightningModule):
             val_loss = output['val_loss']
 
             # reduce manually when using dp
-            if self.trainer.use_dp or self.trainer.use_ddp2:
+            if self.use_dp or self.use_ddp2:
                 val_loss = torch.mean(val_loss)
             val_loss_mean += val_loss
 
@@ -615,11 +615,7 @@ class StageTrainer(pl.LightningModule):
         # self.hparams.vocab_size = len(common_dset.word2idx)
 
         if self.use_ddp:
-            train_sampler = torch.utils.data.distributed.DistributedSampler(
-                train_dset,
-                num_replicas=self.trainer.world_size,
-                rank=self.trainer.proc_rank
-            )
+            train_sampler = torch.utils.data.distributed.DistributedSampler(train_dset)
         else:
             train_sampler = None
 
