@@ -556,7 +556,7 @@ class Stage(pl.LightningModule):
 
         return {'val_loss': loss, "valid_n_correct": correct_ids, "valid_n_ids": len(pred_ids)}
 
-    def validation_end(self, outputs):
+    def validation_epoch_end(self, outputs):
         # OPTIONAL
         val_loss_mean = 0
         for output in outputs:
