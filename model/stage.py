@@ -608,24 +608,17 @@ class Stage(pl.LightningModule):
         #
         # return [optimizer], [scheduler]
 
-    @pl.data_loader
     def train_dataloader(self):
         common_dset = TVQACommonDataset(self.hparams)
         train_dset = TVQASplitDataset(common_dset, self.hparams.train_path, "train")
         # self.hparams.vocab_size = len(common_dset.word2idx)
 
-        if self.use_ddp:
-            train_sampler = torch.utils.data.distributed.DistributedSampler(train_dset)
-        else:
-            train_sampler = None
-
-        train_loader = DataLoader(train_dset, batch_size=self.hparams.bsz, shuffle=(train_sampler is None),
-                                  sampler=train_sampler, collate_fn=self.pad_collate,
+        train_loader = DataLoader(train_dset, batch_size=self.hparams.bsz, shuffle=True,
+                                  collate_fn=self.pad_collate,
                                   num_workers=self.hparams.num_workers, pin_memory=True)
 
         return train_loader
 
-    @pl.data_loader
     def val_dataloader(self):
         # OPTIONAL
         # can also return a list of val dataloaders
@@ -637,7 +630,6 @@ class Stage(pl.LightningModule):
 
         return valid_loader
 
-    @pl.data_loader
     def test_dataloader(self):
         # OPTIONAL
         # can also return a list of test dataloaders
