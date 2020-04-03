@@ -28,7 +28,7 @@ class Config:
         self.parser.add_argument("--checkpoint-interval", type=int, default=-1,
                                  help="number of batches after which a checkpoint of the trained model will be created."
                                       " When set to -1 (default) checkpoint is disabled")
-        self.parser.add_argument("--progress_bar_refresh_rate", type=int, default=5,
+        self.parser.add_argument("--progress_bar_refresh_rate", type=int, default=1,
                                  help="How often to refresh progress bar (in steps).")
         self.parser.add_argument("--lr", type=float, default=1e-3, help="learning rate")
         self.parser.add_argument("--wd", type=float, default=3e-7, help="weight decay")
