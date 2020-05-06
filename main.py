@@ -30,7 +30,7 @@ def main(hparams):
 
     trainer = pl.Trainer(max_epochs=hparams.n_epoch,
                          val_check_interval=hparams.val_check_interval,
-                         default_save_path=hparams.save_model_dir,
+                         default_root_dir=hparams.save_model_dir,
                          gpus=hparams.device_ids,
                          distributed_backend=hparams.distributed_backend,
                          early_stop_callback=early_stop_callback,

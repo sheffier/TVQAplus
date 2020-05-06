@@ -9,7 +9,7 @@ class Config:
     def get_parser(self, model_cls) -> Config:
         self.parser = ArgumentParser(description=f"parser for {model_cls.__name__} model")
 
-        self.parser.add_argument("--save-model-dir", type=str, required=True,
+        self.parser.add_argument("--save-model-dir", type=str, default=None,
                                  help="path to folder where trained model will be saved.")
         self.parser.add_argument("--checkpoint-model-dir", type=str, default="",
                                  help="path to folder where checkpoints of trained models will be saved")
