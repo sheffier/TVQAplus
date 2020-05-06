@@ -16,8 +16,6 @@ class Config:
         self.parser.add_argument("--device_ids", type=int, nargs="+", default=[0], help="GPU ids to run the job")
         self.parser.add_argument('--distributed-backend', type=str, default='', choices=('dp', 'ddp', 'ddp2'),
                                  help='supports three options dp, ddp, ddp2')
-        self.parser.add_argument("--cuda", type=int, required=True,
-                                 help="set it to 1 for running on GPU, 0 for CPU")
         self.parser.add_argument("--num_workers", type=int, default=2,
                                  help="num subprocesses used to load the data, 0: use main process")
         self.parser.add_argument("--seed", type=int, default=2018,
