@@ -323,10 +323,10 @@ class Stage(pl.LightningModule):
                     self.hparams[k] = torch.FloatTensor(v)
                 else:
                     raise ValueError("hparams: only list of floats or ints is supported")
-            elif isinstance(v, (int, float, str, bool, torch.Tensor)):
+            elif v is None or isinstance(v, (int, float, str, bool, torch.Tensor)):
                 self.hparams[k] = v
             else:
-                raise ValueError("hparams: unsupported type")
+                raise ValueError(f"hparams: unsupported type ({k}: {type(v)})")
 
         self.hparams = Namespace(**self.hparams)
 
@@ -630,10 +630,10 @@ class Stage(pl.LightningModule):
 
         return valid_loader
 
-    def test_dataloader(self):
-        # OPTIONAL
-        # can also return a list of test dataloaders
-        pass
+    # def test_dataloader(self):
+    #     # OPTIONAL
+    #     # can also return a list of test dataloaders
+    #     pass
 
     def get_ts_loss(self, temporal_scores, ts_labels,  answer_indices):
         """
