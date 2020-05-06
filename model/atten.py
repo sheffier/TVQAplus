@@ -2,8 +2,19 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import NamedTuple, List, Dict
 from torch.autograd import Variable
 from itertools import product, permutations, combinations_with_replacement, chain
+
+
+class UtilsConf(NamedTuple):
+    emb_size: int
+    spatial_size: int  # number of entities
+
+
+class UtilSharedConf(NamedTuple):
+    num_utils: int  # number of utils sharing weights
+    connected_list: List[str]  # list of utils (outside of the group) that are connected to the group
 
 
 class Unary(nn.Module):
@@ -37,7 +48,7 @@ class Pairwise(nn.Module):
         """
 
         super(Pairwise, self).__init__()
-        embed_y_size = embed_y_size if y_spatial_dim is not None else embed_x_size
+        embed_y_size = embed_y_size if embed_y_size is not None else embed_x_size
         self.y_spatial_dim = y_spatial_dim if y_spatial_dim is not None else x_spatial_dim
 
         self.embed_size = max(embed_x_size, embed_y_size)
@@ -80,11 +91,11 @@ class Pairwise(nn.Module):
 
 
 class Atten(nn.Module):
-    def __init__(self, util_e, sharing_factor_weights=None, prior_flag=False,
-                 sizes=None, size_force=False, pairwise_flag=True, unary_flag=True, self_flag=True):
+    def __init__(self, utils_conf: Dict[str, UtilsConf], sharing_factor_weights=None, prior_flag=False,
+                 size_force=False, pairwise_flag=True, unary_flag=True, self_flag=True):
         """
             The class performs an attention on a given list of utilities representation.
-        :param util_e: the embedding dimensions
+        :param utils_conf: configuration for each utility (embedding size, spatial size)
         :param sharing_factor_weights: high-order factors to share weights (i.e. similar utilities).
          in visual-dialog history interaction. the format should be [(idx, number of utils, connected_to utils)...]
         :param prior_flag: is prior factor provided
@@ -95,46 +106,47 @@ class Atten(nn.Module):
         :param self_flag: use self interactions between utilitie's entities
         """
         super(Atten, self).__init__()
-        self.util_e = util_e
+
+        self.utils_conf = utils_conf
 
         self.prior_flag = prior_flag
 
-        self.n_utils = len(util_e)
+        self.n_utils = len(utils_conf)
 
         self.spatial_pool = nn.ModuleDict()
 
-        self.un_models = nn.ModuleList()
+        self.un_models = nn.ModuleDict()
 
         self.self_flag = self_flag
         self.pairwise_flag = pairwise_flag
         self.unary_flag = unary_flag
         self.size_force = size_force
 
-        if len(sizes) == 0:
-            sizes = [None for _ in util_e]
+        self.sharing_factor_weights = sharing_factor_weights if sharing_factor_weights is not None else {}
+        self.sharing_factors_set = set([shared_util_key for shared_util_key in self.sharing_factor_weights])
 
-        self.sharing_factor_weights = sharing_factor_weights
-        self.sharing_factors_set = set([h[0] for h in self.sharing_factor_weights])
-
-        for idx, e_dim in enumerate(util_e):
-            self.un_models.append(Unary(e_dim))
+        for util_name, util_conf in utils_conf.items():
+            self.un_models[util_name] = Unary(util_conf.emb_size)
             if self.size_force:
-                self.spatial_pool[str(idx)] = nn.AdaptiveAvgPool1d(sizes[idx])
+                self.spatial_pool[util_name] = nn.AdaptiveAvgPool1d(util_conf.spatial_size)
 
         self.pp_models = nn.ModuleDict()
-        for ((idx1, e_dim_1), (idx2, e_dim_2)) \
-                in combinations_with_replacement(enumerate(util_e), 2):
-            if idx1 == idx2:
-                self.pp_models[str(idx1)] = Pairwise(e_dim_1, sizes[idx1])
+        for ((util_a_name, util_a_conf), (util_b_name, util_b_conf)) \
+                in combinations_with_replacement(utils_conf.items(), 2):
+            if util_a_name == util_b_name:
+                self.pp_models[util_a_name] = Pairwise(util_a_conf.emb_size, util_a_conf.spatial_size)
             else:
                 if pairwise_flag:
-                    for i, num_utils, connected_list in self.sharing_factor_weights:
-                        if i == idx1 and idx2 not in set(connected_list) \
-                                or idx2 == i and idx1 not in set(connected_list):
+                    for util_name, util_shared_conf in self.sharing_factor_weights.items():
+                        if util_name == util_a_name and util_b_name not in set(util_shared_conf.connected_list) \
+                                or util_b_name == util_name and util_a_name not in set(util_shared_conf.connected_list):
                             continue
-                    self.pp_models[str((idx1, idx2))] = Pairwise(e_dim_1, sizes[idx1], e_dim_2, sizes[idx2])
+                    self.pp_models[f"({util_a_name}, {util_b_name})"] = Pairwise(util_a_conf.emb_size,
+                                                                                 util_a_conf.spatial_size,
+                                                                                 util_b_conf.emb_size,
+                                                                                 util_b_conf.spatial_size)
 
-        self.reduce_potentials = nn.ModuleList()
+        self.reduce_potentials = nn.ModuleDict()
         self.num_of_potentials = dict()
 
         self.default_num_of_potentials = 0
@@ -145,114 +157,123 @@ class Atten(nn.Module):
             self.default_num_of_potentials += 1
         if self.prior_flag:
             self.default_num_of_potentials += 1
-        for idx in range(self.n_utils):
-            self.num_of_potentials[idx] = self.default_num_of_potentials
+        for util_name in self.utils_conf.keys():
+            self.num_of_potentials[util_name] = self.default_num_of_potentials
 
         '''
          All other utilities
         '''
         if pairwise_flag:
-            for idx, num_utils, connected_utils in sharing_factor_weights:
-                for c_u in connected_utils:
-                    self.num_of_potentials[c_u] += num_utils
-                    self.num_of_potentials[idx] += 1
-            for k in self.num_of_potentials.keys():
-                if k not in self.sharing_factors_set:
-                    self.num_of_potentials[k] += (self.n_utils - 1) - len(sharing_factor_weights)
+            for util_name, util_shared_conf in self.sharing_factor_weights.items():
+                for c_u_name in util_shared_conf.connected_list:
+                    self.num_of_potentials[c_u_name] += util_shared_conf.num_utils
+                    self.num_of_potentials[util_name] += 1
+            for util_name in self.num_of_potentials.keys():
+                if util_name not in self.sharing_factors_set:
+                    self.num_of_potentials[util_name] += (self.n_utils - 1) - len(self.sharing_factor_weights)
 
-        for idx in range(self.n_utils):
-            self.reduce_potentials.append(nn.Conv1d(self.num_of_potentials[idx], 1, 1, bias=False))
+        for util_name in self.utils_conf.keys():
+            self.reduce_potentials[util_name] = nn.Conv1d(self.num_of_potentials[util_name], 1, 1, bias=False)
 
-    def forward(self, utils, priors=None):
+    def forward(self, utils: dict, b_size, priors=None):
         assert self.n_utils == len(utils)
         assert (priors is None and not self.prior_flag) \
                or (priors is not None
                    and self.prior_flag
                    and len(priors) == self.n_utils)
-        b_size = utils[0].size(0)
+        # b_size = utils[0].size(0)
         util_poten = dict()
         attention = list()
         if self.size_force:
-            for i, num_utils, _ in self.sharing_factor_weights:
-                if str(i) not in self.spatial_pool.keys():
+            for util_name, util_shared_conf in self.sharing_factor_weights.items():
+                if util_name not in self.spatial_pool.keys():
                     continue
                 else:
-                    high_util = utils[i]
-                    high_util = high_util.view(num_utils * b_size, high_util.size(2), high_util.size(3))
+                    high_util = utils[util_name]
+                    high_util = high_util.view(util_shared_conf.num_utils * b_size, high_util.size(2), high_util.size(3))
                     high_util = high_util.transpose(1, 2)
-                    utils[i] = self.spatial_pool[str(i)](high_util).transpose(1, 2)
+                    utils[util_name] = self.spatial_pool[util_name](high_util).transpose(1, 2)
 
-            for i in range(self.n_utils):
-                if i in self.sharing_factors_set \
-                        or str(i) not in self.spatial_pool.keys():
+            for util_name in self.utils_conf.keys():
+                if util_name in self.sharing_factors_set \
+                        or util_name not in self.spatial_pool.keys():
                     continue
-                utils[i] = utils[i].transpose(1, 2)
-                utils[i] = self.spatial_pool[str(i)](utils[i]).transpose(1, 2)
-                if self.prior_flag and priors[i] is not None:
-                    priors[i] = self.spatial_pool[str(i)](priors[i].unsqueeze(1)).squeeze(1)
+                utils[util_name] = utils[util_name].transpose(1, 2)
+                utils[util_name] = self.spatial_pool[util_name](utils[util_name]).transpose(1, 2)
+                if self.prior_flag and priors[util_name] is not None:
+                    priors[util_name] = self.spatial_pool[util_name](priors[util_name].unsqueeze(1)).squeeze(1)
 
-        for i, num_utils, connected_list in self.sharing_factor_weights:
+        for util_name, util_shared_conf in self.sharing_factor_weights.items():
             # i.e. High-Order utility
             if self.unary_flag:
-                util_poten.setdefault(i, []).append(self.un_models[i](utils[i]))
+                util_poten.setdefault(util_name, []).append(self.un_models[util_name](utils[util_name]))
 
             if self.self_flag:
-                util_poten.setdefault(i, []).append(self.pp_models[str(i)](utils[i]))
+                util_poten.setdefault(util_name, []).append(self.pp_models[util_name](utils[util_name]))
 
             if self.pairwise_flag:
-                for j in connected_list:
-                    other_util = utils[j]
+                for c_u_name in util_shared_conf.connected_list:
+                    other_util = utils[c_u_name]
                     expanded_util = other_util.unsqueeze(1).expand(b_size,
-                                                                   num_utils,
+                                                                   util_shared_conf.num_utils,
                                                                    other_util.size(1),
                                                                    other_util.size(2)).contiguous().view(
-                        b_size * num_utils,
+                        b_size * util_shared_conf.num_utils,
                         other_util.size(1),
                         other_util.size(2))
 
-                    if i < j:
-                        poten_ij, poten_ji = self.pp_models[str((i, j))](utils[i], expanded_util)
-                    else:
-                        poten_ji, poten_ij = self.pp_models[str((j, i))](expanded_util, utils[i])
-                    util_poten[i].append(poten_ij)
-                    util_poten.setdefault(j, []).append(poten_ji.view(b_size, num_utils, poten_ji.size(1)))
+                    try:
+                        model_key = f"({util_name}, {c_u_name})"
+                        poten_ij, poten_ji = self.pp_models[model_key](utils[util_name], expanded_util)
+                    except KeyError:
+                        try:
+                            model_key = f"({c_u_name}, {util_name})"
+                            poten_ji, poten_ij = self.pp_models[model_key](expanded_util, utils[util_name])
+                        except Exception as e:
+                            print(e)
+                            raise
+
+                    util_poten[util_name].append(poten_ij)
+                    util_poten.setdefault(c_u_name, []).append(poten_ji.view(b_size, util_shared_conf.num_utils,
+                                                                             poten_ji.size(1)))
 
         # local
-        for i in range(self.n_utils):
-            if i in self.sharing_factors_set:
+        for util_name in self.utils_conf.keys():
+            if util_name in self.sharing_factors_set:
                 continue
             if self.unary_flag:
-                util_poten.setdefault(i, []).append(self.un_models[i](utils[i]))
+                util_poten.setdefault(util_name, []).append(self.un_models[util_name](utils[util_name]))
             if self.self_flag:
-                util_poten.setdefault(i, []).append(self.pp_models[str(i)](utils[i]))
+                util_poten.setdefault(util_name, []).append(self.pp_models[util_name](utils[util_name]))
 
         # joint
         if self.pairwise_flag:
-            for (i, j) in combinations_with_replacement(range(self.n_utils), 2):
-                if i in self.sharing_factors_set \
-                        or j in self.sharing_factors_set:
+            for (util_a_name, util_b_name) in combinations_with_replacement(self.utils_conf.keys(), 2):
+                if util_a_name in self.sharing_factors_set \
+                        or util_b_name in self.sharing_factors_set:
                     continue
-                if i == j:
+                if util_a_name == util_b_name:
                     continue
                 else:
-                    poten_ij, poten_ji = self.pp_models[str((i, j))](utils[i], utils[j])
-                    util_poten.setdefault(i, []).append(poten_ij)
-                    util_poten.setdefault(j, []).append(poten_ji)
+                    model_key = f"({util_a_name}, {util_b_name})"
+                    poten_ij, poten_ji = self.pp_models[model_key](utils[util_a_name], utils[util_b_name])
+                    util_poten.setdefault(util_a_name, []).append(poten_ij)
+                    util_poten.setdefault(util_b_name, []).append(poten_ji)
 
         # perform attention
-        for i in range(self.n_utils):
+        for util_name in self.utils_conf.keys():
             if self.prior_flag:
-                prior = priors[i] \
-                    if priors[i] is not None \
-                    else torch.zeros_like(util_poten[i][0], requires_grad=False).cuda()
+                prior = priors[util_name] \
+                    if priors[util_name] is not None \
+                    else torch.zeros_like(util_poten[util_name][0], requires_grad=False).cuda()
 
-                util_poten[i].append(prior)
+                util_poten[util_name].append(prior)
 
-            util_poten[i] = torch.cat([p if len(p.size()) == 3 else p.unsqueeze(1)
-                                       for p in util_poten[i]], dim=1)
-            util_poten[i] = self.reduce_potentials[i](util_poten[i]).squeeze(1)
-            util_poten[i] = F.softmax(util_poten[i], dim=1).unsqueeze(2)
-            attention.append(torch.bmm(utils[i].transpose(1, 2), util_poten[i]).squeeze(2))
+            util_poten[util_name] = torch.cat([p if len(p.size()) == 3 else p.unsqueeze(1)
+                                               for p in util_poten[util_name]], dim=1)
+            util_poten[util_name] = self.reduce_potentials[util_name](util_poten[util_name]).squeeze(1)
+            util_poten[util_name] = F.softmax(util_poten[util_name], dim=1).unsqueeze(2)
+            attention.append(torch.bmm(utils[util_name].transpose(1, 2), util_poten[util_name]).squeeze(2))
 
         return attention
 
