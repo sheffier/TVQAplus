@@ -19,25 +19,36 @@ eval_object_vocab_path=${release_path}/eval_object_vocab.json
 frm_cnt_path=${release_path}/frm_cnt_cache.json
 
 extra_args=()
+PDB_CMD=""
 if [[ $1 == "debug" ]]; then
     echo "debug mode"
     extra_args+=(--vcpt_path)
     extra_args+=(${debug_vcpt_path})
     extra_args+=(--debug)
-    extra_args+=(${@:2})
+
+    if [[ $2 == "PDB" ]]; then
+        PDB_CMD="-m pdb "
+        extra_args+=(${@:3})
+    else
+        extra_args+=(${@:2})
+    fi
 else
     extra_args+=(--vcpt_path)
     extra_args+=(${vcpt_path})
-    extra_args+=(${@:1})
+    if [[ $1 == "PDB" ]]; then
+        PDB_CMD="-m pdb "
+        extra_args+=(${@:2})
+    else
+        extra_args+=(${@:1})
+    fi
 fi
 
-python main.py \
+python ${PDB_CMD} main.py \
 --train_path ${train_path} \
 --valid_path ${valid_path} \
 --sub_path ${sub_path} \
 --qa_bert_path ${qa_bert_path} \
 --sub_bert_path ${sub_bert_path} \
---vcpt_path ${vcpt_path} \
 --vfeat_path ${vfeat_path} \
 --word2idx_path ${word2idx_path} \
 --eval_object_vocab_path ${eval_object_vocab_path} \
