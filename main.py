@@ -228,8 +228,8 @@ def worker(model, opt):
     )
 
     common_dset = TVQACommonDataset(opt)
-    train_dset = TVQASplitDataset(common_dset, opt.train_path, "train")
-    valid_dset = TVQASplitDataset(common_dset, opt.valid_path, "valid")
+    train_dset = TVQASplitDataset(common_dset, opt.train_path, "train", debug=opt.debug)
+    valid_dset = TVQASplitDataset(common_dset, opt.valid_path, "valid", debug=opt.debug)
     opt.vocab_size = len(common_dset.word2idx)
 
     if opt.dist:
