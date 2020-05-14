@@ -395,8 +395,6 @@ class Stage(pl.LightningModule):
 
         self.pad_collate = PadCollate(hparams)
 
-        self.scheduler = None
-
     def forward(self, batch):
         bsz = len(batch["qid"])
         num_a = batch["qas"].shape[1]
@@ -475,15 +473,6 @@ class Stage(pl.LightningModule):
         return out, target, t_scores, vid_raw_s
 
     def on_epoch_start(self):
-        if self.scheduler is None:
-            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                self.trainer.optimizers[0],
-                mode="max",
-                factor=0.5,
-                patience=10,
-                verbose=True
-            )
-
         self.use_hard_negatives = self.current_epoch + 1 > self.hard_negative_start
 
     def training_step(self, batch, batch_idx):
@@ -642,9 +631,6 @@ class Stage(pl.LightningModule):
 
         accuracy = float(n_total_correct_ids) / float(n_total_ids)
 
-        if self.scheduler is not None:
-            self.scheduler.step(accuracy)
-
         metric_dict = {'val_loss': val_total_loss_mean, 'val_acc': accuracy}
         logger_logs = {'valid_total_loss': val_total_loss_mean,
                        'valid_cls_loss': val_cls_loss_mean,
@@ -671,16 +657,21 @@ class Stage(pl.LightningModule):
             lr=self.hparams.lr,
             weight_decay=self.hparams.wd)
 
-        return optimizer
-        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        #     optimizer,
-        #     mode="max",
-        #     factor=0.5,
-        #     patience=10,
-        #     verbose=True
-        # )
-        #
-        # return [optimizer], [scheduler]
+        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="max",
+            factor=0.5,
+            patience=10,
+            verbose=True
+        )
+
+        sched_dict = {'scheduler': lr_scheduler,
+                      'interval': 'epoch',
+                      'monitor': 'val_acc'
+                      # 'frequency': x
+                      }
+
+        return [optimizer], [sched_dict]
 
     def train_dataloader(self):
         common_dset = TVQACommonDataset(self.hparams)
