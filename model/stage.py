@@ -548,6 +548,8 @@ class Stage(pl.LightningModule):
             else:
                 print("RuntimeError {}".format(e))
 
+            raise e
+
     def training_epoch_end(self, outputs):
         train_total_loss_mean = 0.0
         train_cls_loss_mean = 0.0
