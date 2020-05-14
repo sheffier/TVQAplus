@@ -530,12 +530,64 @@ class Stage(pl.LightningModule):
             cls_loss = cls_loss * (1.0 * len(qids) / len(targets))
             loss = cls_loss + self.hparams.att_weight * att_loss + self.hparams.ts_weight * temporal_loss
 
-            return {'loss': loss}
+            # measure accuracy and record loss
+            pred_ids = outputs.argmax(dim=1, keepdim=True)
+            targets = batch["target"]
+            correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum().item()
+
+            return {'loss': loss,
+                    'cls_loss': cls_loss,
+                    'att_loss': att_loss,
+                    'temporal_loss': temporal_loss,
+                    'train_n_correct': correct_ids,
+                    'train_n_ids': len(pred_ids)
+                    }
         except RuntimeError as e:
             if "out of memory" in str(e):
                 print("WARNING: ran out of memory, skipping batch")
             else:
                 print("RuntimeError {}".format(e))
+
+    def training_epoch_end(self, outputs):
+        train_total_loss_mean = 0.0
+        train_cls_loss_mean = 0.0
+        train_att_loss_mean = 0.0
+        train_temporal_loss_mean = 0.0
+        for output in outputs:
+            train_total_loss = output['loss']
+            train_cls_loss = output['cls_loss']
+            train_att_loss = output['att_loss']
+            train_temporal_loss = output['temporal_loss']
+
+            # reduce manually when using dp
+            # if self.use_dp or self.use_ddp2:
+            #     train_total_loss = torch.mean(train_total_loss)
+            train_total_loss_mean += train_total_loss
+            train_cls_loss_mean += train_cls_loss
+            train_att_loss_mean += train_att_loss
+            train_temporal_loss_mean += train_temporal_loss
+
+        train_total_loss_mean /= len(outputs)
+        train_cls_loss_mean /= len(outputs)
+        train_att_loss_mean /= len(outputs)
+        train_temporal_loss_mean /= len(outputs)
+
+        n_total_correct_ids = sum([out["train_n_correct"] for out in outputs])
+        n_total_ids = sum([out["train_n_ids"] for out in outputs])
+
+        accuracy = float(n_total_correct_ids) / float(n_total_ids)
+
+        metric_dict = {'train_loss': train_total_loss_mean, 'train_acc': accuracy}
+        logger_logs = {'train_total_loss': train_total_loss_mean,
+                       'train_cls_loss': train_cls_loss_mean,
+                       'train_att_loss': train_att_loss_mean,
+                       'train_temporal_loss': train_temporal_loss_mean,
+                       'train_acc': accuracy
+                       }
+
+        result = {'progress_bar': metric_dict, 'log': logger_logs}
+
+        return result
 
     def validation_step(self, batch, batch_idx):
         # OPTIONAL
@@ -554,20 +606,34 @@ class Stage(pl.LightningModule):
         targets = batch["target"]
         correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum().item()
 
-        return {'val_loss': loss, "valid_n_correct": correct_ids, "valid_n_ids": len(pred_ids)}
+        return {'val_loss': loss,
+                'valid_cls_loss': cls_loss,
+                'valid_temporal_loss': temporal_loss,
+                'valid_n_correct': correct_ids,
+                'valid_n_ids': len(pred_ids)
+                }
 
     def validation_epoch_end(self, outputs):
         # OPTIONAL
-        val_loss_mean = 0
+        val_total_loss_mean = 0.0
+        val_cls_loss_mean = 0.0
+        val_temporal_loss_mean = 0.0
         for output in outputs:
-            val_loss = output['val_loss']
+            val_total_loss = output['val_loss']
+            val_cls_loss = output['valid_cls_loss']
+            val_temporal_loss = output['valid_temporal_loss']
 
-            # reduce manually when using dp
-            if self.use_dp or self.use_ddp2:
-                val_loss = torch.mean(val_loss)
-            val_loss_mean += val_loss
+            # # reduce manually when using dp
+            # if self.use_dp or self.use_ddp2:
+            #     val_loss = torch.mean(val_loss)
 
-        val_loss_mean /= len(outputs)
+            val_total_loss_mean += val_total_loss
+            val_cls_loss_mean += val_cls_loss
+            val_temporal_loss_mean += val_temporal_loss
+
+        val_total_loss_mean /= len(outputs)
+        val_cls_loss_mean /= len(outputs)
+        val_temporal_loss_mean /= len(outputs)
 
         n_total_correct_ids = sum([out["valid_n_correct"] for out in outputs])
         n_total_ids = sum([out["valid_n_ids"] for out in outputs])
@@ -577,8 +643,14 @@ class Stage(pl.LightningModule):
         if self.scheduler is not None:
             self.scheduler.step(accuracy)
 
-        metric_dict = {'val_loss': val_loss_mean, 'val_acc': accuracy}
-        result = {'progress_bar': metric_dict, 'log': metric_dict}
+        metric_dict = {'val_loss': val_total_loss_mean, 'val_acc': accuracy}
+        logger_logs = {'valid_total_loss': val_total_loss_mean,
+                       'valid_cls_loss': val_cls_loss_mean,
+                       'valid_temporal_loss': val_temporal_loss_mean,
+                       'valid_acc': accuracy
+                       }
+
+        result = {'progress_bar': metric_dict, 'log': logger_logs}
 
         return result
 
