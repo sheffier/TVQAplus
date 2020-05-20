@@ -521,7 +521,6 @@ class Stage(pl.LightningModule):
 
             # measure accuracy and record loss
             pred_ids = outputs.argmax(dim=1, keepdim=True)
-            targets = batch["target"]
             correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum().item()
 
             return {'loss': loss,
