@@ -391,7 +391,7 @@ class Stage(pl.LightningModule):
         self.classfier_head_multi_proposal = ClassifierHeadMultiProposal(cls_stack_enc_conf, hparams.hsz,
                                                                          hparams.add_local, hparams.t_iter)
 
-        self.criterion = nn.CrossEntropyLoss(reduction="mean")
+        self.criterion = nn.CrossEntropyLoss(reduction="sum")
 
         self.pad_collate = PadCollate(hparams)
 
