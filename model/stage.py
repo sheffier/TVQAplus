@@ -416,7 +416,7 @@ class Stage(pl.LightningModule):
         self.classfier_head_multi_proposal = ClassifierHeadMultiProposal(cls_stack_enc_conf, hparams.hsz,
                                                                          hparams.add_local, hparams.t_iter)
 
-        self.criterion = nn.CrossEntropyLoss(reduction="mean")
+        self.criterion = nn.CrossEntropyLoss(reduction="sum")
 
         self.pad_collate = PadCollate(hparams)
 
@@ -606,6 +606,11 @@ class Stage(pl.LightningModule):
             raise e
 
     def training_epoch_end(self, outputs):
+        n_total_correct_ids = sum([out["train_n_correct"] for out in outputs])
+        n_total_ids = sum([out["train_n_ids"] for out in outputs])
+
+        accuracy = float(n_total_correct_ids) / float(n_total_ids)
+
         train_total_loss_mean = 0.0
         train_cls_loss_mean = 0.0
         train_att_loss_mean = 0.0
@@ -624,22 +629,18 @@ class Stage(pl.LightningModule):
             train_att_loss_mean += train_att_loss
             train_temporal_loss_mean += train_temporal_loss
 
-        train_total_loss_mean /= len(outputs)
-        train_cls_loss_mean /= len(outputs)
-        train_att_loss_mean /= len(outputs)
-        train_temporal_loss_mean /= len(outputs)
-
-        n_total_correct_ids = sum([out["train_n_correct"] for out in outputs])
-        n_total_ids = sum([out["train_n_ids"] for out in outputs])
-
-        accuracy = float(n_total_correct_ids) / float(n_total_ids)
+        train_total_loss_mean /= n_total_ids
+        train_cls_loss_mean /= n_total_ids
+        train_att_loss_mean /= n_total_ids
+        train_temporal_loss_mean /= n_total_ids
 
         metric_dict = {'train_loss': train_total_loss_mean, 'train_acc': accuracy}
         logger_logs = {'train_total_loss': train_total_loss_mean,
                        'train_cls_loss': train_cls_loss_mean,
                        'train_att_loss': train_att_loss_mean,
                        'train_temporal_loss': train_temporal_loss_mean,
-                       'train_acc': accuracy
+                       'train_acc': accuracy,
+                       'n_total_ids': n_total_ids
                        }
 
         result = {'progress_bar': metric_dict, 'log': logger_logs}
@@ -672,6 +673,11 @@ class Stage(pl.LightningModule):
 
     def validation_epoch_end(self, outputs):
         # OPTIONAL
+        n_total_correct_ids = sum([out["valid_n_correct"] for out in outputs])
+        n_total_ids = sum([out["valid_n_ids"] for out in outputs])
+
+        accuracy = float(n_total_correct_ids) / float(n_total_ids)
+
         val_total_loss_mean = 0.0
         val_cls_loss_mean = 0.0
         val_temporal_loss_mean = 0.0
@@ -688,14 +694,9 @@ class Stage(pl.LightningModule):
             val_cls_loss_mean += val_cls_loss
             val_temporal_loss_mean += val_temporal_loss
 
-        val_total_loss_mean /= len(outputs)
-        val_cls_loss_mean /= len(outputs)
-        val_temporal_loss_mean /= len(outputs)
-
-        n_total_correct_ids = sum([out["valid_n_correct"] for out in outputs])
-        n_total_ids = sum([out["valid_n_ids"] for out in outputs])
-
-        accuracy = float(n_total_correct_ids) / float(n_total_ids)
+        val_total_loss_mean /= n_total_ids
+        val_cls_loss_mean /= n_total_ids
+        val_temporal_loss_mean /= n_total_ids
 
         metric_dict = {'val_loss': val_total_loss_mean, 'val_acc': accuracy}
         logger_logs = {'valid_total_loss': val_total_loss_mean,
