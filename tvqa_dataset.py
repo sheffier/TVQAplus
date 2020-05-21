@@ -5,7 +5,6 @@ import torch
 import copy
 from typing import Optional
 from torch.utils.data.dataset import Dataset
-from pudb.remote import set_trace
 
 from utils import load_pickle, load_json, files_exist, get_all_img_ids, computeIoU, \
     flat_list_of_lists, match_stanford_tokenizer, get_elements_variable_length, dissect_by_lengths
