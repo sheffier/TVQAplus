@@ -8,7 +8,8 @@ import argparse
 from argparse import Namespace
 from torch.utils.data import DataLoader
 from tvqa_dataset import TVQACommonDataset, TVQASplitDataset, pad_collate, PadCollate
-from .context_query_attention import StructuredAttentionWithDownsize
+# from .context_query_attention import StructuredAttentionWithDownsize
+from model.atten import Atten, UtilSharedConf, UtilsConf
 from .encoder import StackedEncoder, StackedEncoderConf
 from .cnn import DepthwiseSeparableConv
 from .model_utils import save_pickle, mask_logits, flat_list_of_lists, \
@@ -269,13 +270,19 @@ class ClassifierHeadMultiProposal(nn.Module):
             extra_span_length (int): expand the localized span to give a little bit extra context
         Returns:
         """
-        bsz, num_a, num_img, num_words = statement_mask.shape
-        statement = statement.view(bsz * num_a * num_img, num_words, -1)  # (N*5*Li, Lqa, D)
-        statement_mask = statement_mask.view(bsz * num_a * num_img, num_words)  # (N*5*Li, Lqa)
-        statement = self.cls_encoder(statement, statement_mask)  # (N*5*Li, Lqa, D)
-        max_statement = torch.max(mask_logits(statement, statement_mask.unsqueeze(2)), 1)[0]  # (N*5*Li, D)
-        max_statement_mask = (statement_mask.sum(1) != 0).float().view(bsz, num_a, num_img, 1)  # (N, 5, Li, 1)
-        max_statement = max_statement.view(bsz * num_a, num_img, -1)  # (N, 5, Li, D)
+        # bsz, num_a, num_img, num_words = statement_mask.shape
+
+        # statement = statement.view(bsz * num_a * num_img, num_words, -1)  # (N*5*Li, Lqa, D)
+        # statement_mask = statement_mask.view(bsz * num_a * num_img, num_words)  # (N*5*Li, Lqa)
+        # statement = self.cls_encoder(statement, statement_mask)  # (N*5*Li, Lqa, D)
+        # max_statement = torch.max(mask_logits(statement, statement_mask.unsqueeze(2)), 1)[0]  # (N*5*Li, D)
+        # max_statement_mask = (statement_mask.sum(1) != 0).float().view(bsz, num_a, num_img, 1)  # (N, 5, Li, 1)
+        # max_statement = max_statement.view(bsz * num_a, num_img, -1)  # (N, 5, Li, D)
+
+        bsz, num_a, num_img, _ = statement.shape
+
+        max_statement = statement
+        # max_statement_mask =
 
         t_score_container = []
         encoded_max_statement_container = []
@@ -302,8 +309,11 @@ class ClassifierHeadMultiProposal(nn.Module):
                 targets, ts_labels, max_num_proposal=max_num_proposal, iou_thd=iou_thd,
                 ce_prob_thd=ce_prob_thd, extra_span_length=extra_span_length)  # (N, 5, D)
         else:
+            # max_max_statement = \
+            #     torch.max(mask_logits(stacked_max_statement, max_statement_mask), 2)[0]  # (N, 5, D)
             max_max_statement = \
-                torch.max(mask_logits(stacked_max_statement, max_statement_mask), 2)[0]  # (N, 5, D)
+                torch.max(stacked_max_statement, 2)[0]  # (N, 5, D)
+
             # targets = targets
 
         answer_scores = self.classifier(max_max_statement).squeeze(2)  # (N, 5)
@@ -375,11 +385,26 @@ class Stage(pl.LightningModule):
                 nn.LayerNorm(hparams.hsz),
             )
 
-        self.qa_ctx_attn = StructuredAttentionWithDownsize(
-            hparams.hsz,
-            dropout=hparams.dropout,
-            scale=hparams.scale,
-            add_void=hparams.add_non_visual)  # no parameters inside
+        utils_conf = {"qa_1": UtilsConf(emb_size=self.hsz, spatial_size=None),
+                      "qa_2": UtilsConf(emb_size=self.hsz, spatial_size=None),
+                      "qa_3": UtilsConf(emb_size=self.hsz, spatial_size=None),
+                      "qa_4": UtilsConf(emb_size=self.hsz, spatial_size=None),
+                      "qa_5": UtilsConf(emb_size=self.hsz, spatial_size=None),
+                      "frame": UtilsConf(emb_size=self.hsz, spatial_size=None),
+                      "sub": UtilsConf(emb_size=self.hsz, spatial_size=None)}
+
+        # sharing_factor_weights = {"hist_q": UtilSharedConf(num_utils=9, connected_list=["ans", "ques"]),
+        #                           "hist_a": UtilSharedConf(num_utils=9, connected_list=["ans", "ques"])}
+
+        # self.mul_atten = Atten(utils_conf=utils_conf, sharing_factor_weights=sharing_factor_weights,
+        #                        prior_flag=False, pairwise_flag=True)
+        self.mul_atten = Atten(utils_conf=utils_conf, prior_flag=False, pairwise_flag=True)
+
+        # self.qa_ctx_attn = StructuredAttentionWithDownsize(
+        #     hparams.hsz,
+        #     dropout=hparams.dropout,
+        #     scale=hparams.scale,
+        #     add_void=hparams.add_non_visual)  # no parameters inside
 
         cls_stack_enc_conf = StackedEncoderConf(n_blocks=hparams.cls_encoder_n_blocks,
                                                 n_conv=hparams.cls_encoder_n_conv,
@@ -405,8 +430,10 @@ class Stage(pl.LightningModule):
         # (N*5, L, D)
         a_embed = self.text_encoder(batch["qas_bert"].view(bsz * num_a, -1, self.wd_size),  # (N*5, L, D)
                                     batch["qas_mask"].view(bsz * num_a, -1))                # (N*5, L)
-        a_embed = a_embed.view(bsz, num_a, 1, -1, hsz)  # (N, 5, 1, L, D)
-        a_mask = batch["qas_mask"].view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
+        a_embed = a_embed.view(bsz, num_a, -1, hsz)  # (N, 5, L, D)
+
+        # a_embed = a_embed.view(bsz, num_a, 1, -1, hsz)  # (N, 5, 1, L, D)
+        # a_mask = batch["qas_mask"].view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
 
         attended_sub, attended_vid, attended_vid_mask, attended_sub_mask = (None,) * 4
         # other_outputs = {}  # {"pos_noun_mask": batch.qa_noun_masks}  # used to visualization and compute att acc
@@ -414,16 +441,18 @@ class Stage(pl.LightningModule):
             num_imgs, num_words = batch["sub_bert"].shape[1:3]
 
             # (N*Li, Lw, D)
-            sub_embed = self.text_encoder(batch["sub_bert"].view(bsz * num_imgs, num_words, -1),  # (N*Li, Lw)
+            sub_embed = self.text_encoder(batch["sub_bert"].view(bsz * num_imgs, num_words, -1),  # (N*Li, Lw, D)
                                           batch["sub_mask"].view(bsz * num_imgs, num_words))      # (N*Li, Lw)
 
-            sub_embed = sub_embed.contiguous().view(bsz, 1, num_imgs, num_words, -1)  # (N, 1, Li, Lw, D)
-            sub_mask = batch["sub_mask"].view(bsz, 1, num_imgs, num_words)  # (N, 1, Li, Lw)
+            # sub_embed = sub_embed.contiguous().view(bsz, num_imgs, num_words, -1)  # (N, Li, Lw, D)
 
-            attended_sub, attended_sub_mask, sub_raw_s, sub_normalized_s = \
-                self.qa_ctx_attn(a_embed, sub_embed, a_mask, sub_mask,
-                                 noun_mask=None,
-                                 void_vector=None)
+            # sub_embed = sub_embed.contiguous().view(bsz, 1, num_imgs, num_words, -1)  # (N, 1, Li, Lw, D)
+            # sub_mask = batch["sub_mask"].view(bsz, 1, num_imgs, num_words)  # (N, 1, Li, Lw)
+
+            # attended_sub, attended_sub_mask, sub_raw_s, sub_normalized_s = \
+            #     self.qa_ctx_attn(a_embed, sub_embed, a_mask, sub_mask,
+            #                      noun_mask=None,
+            #                      void_vector=None)
 
             # other_outputs["sub_normalized_s"] = sub_normalized_s
             # other_outputs["sub_raw_s"] = sub_raw_s
@@ -437,23 +466,61 @@ class Stage(pl.LightningModule):
             vid_embed = self.vid_encoder(vid_embed.view(bsz * num_imgs, num_regions, -1),      # (N*Li, Lw)
                                          batch["vid_mask"].view(bsz * num_imgs, num_regions))  # (N*Li, Lr)
 
-            vid_embed = vid_embed.contiguous().view(bsz, 1, num_imgs, num_regions, -1)  # (N, 1, Li, Lr, D)
-            vid_mask = batch["vid_mask"].view(bsz, 1, num_imgs, num_regions)  # (N, 1, Li, Lr)
+            # vid_embed = vid_embed.contiguous().view(bsz, num_imgs, num_regions, -1)  # (N, Li, Lr, D)
 
-            attended_vid, attended_vid_mask, vid_raw_s, vid_normalized_s = \
-                self.qa_ctx_attn(a_embed, vid_embed, a_mask, vid_mask,
-                                 noun_mask=None,
-                                 void_vector=None)
+            # vid_embed = vid_embed.contiguous().view(bsz, 1, num_imgs, num_regions, -1)  # (N, 1, Li, Lr, D)
+            # vid_mask = batch["vid_mask"].view(bsz, 1, num_imgs, num_regions)  # (N, 1, Li, Lr)
+
+            # attended_vid, attended_vid_mask, vid_raw_s, vid_normalized_s = \
+            #     self.qa_ctx_attn(a_embed, vid_embed, a_mask, vid_mask,
+            #                      noun_mask=None,
+            #                      void_vector=None)
 
             # other_outputs["vid_normalized_s"] = vid_normalized_s
             # other_outputs["vid_raw_s"] = vid_raw_s
 
+        a_embed_fga = a_embed.unsqueeze(1).expand([bsz, num_imgs, num_a, -1, hsz]).reshape(bsz * num_imgs, num_a, -1, hsz)
+        a_embed_1 = a_embed_fga[:, 0, :, :]
+        a_embed_2 = a_embed_fga[:, 1, :, :]
+        a_embed_3 = a_embed_fga[:, 2, :, :]
+        a_embed_4 = a_embed_fga[:, 3, :, :]
+        a_embed_5 = a_embed_fga[:, 4, :, :]
+
+        att_input = {"qa_1": a_embed_1,
+                     "qa_2": a_embed_2,
+                     "qa_3": a_embed_3,
+                     "qa_4": a_embed_4,
+                     "qa_5": a_embed_5,
+                     "frame": vid_embed,
+                     "sub": sub_embed}
+
+        # priors = {"qa":,
+        #           "frames":,
+        #           "subs":}
+
+        att_utils_dict = self.mul_atten(att_input, a_embed.size(0), priors=None)
+
+        att_q1 = att_utils_dict["qa_1"].reshape(bsz, num_imgs, -1)
+        att_q2 = att_utils_dict["qa_2"].reshape(bsz, num_imgs, -1)
+        att_q3 = att_utils_dict["qa_3"].reshape(bsz, num_imgs, -1)
+        att_q4 = att_utils_dict["qa_4"].reshape(bsz, num_imgs, -1)
+        att_q5 = att_utils_dict["qa_5"].reshape(bsz, num_imgs, -1)
+        att_q = torch.stack([att_q1, att_q2, att_q3, att_q4, att_q5], dim=1)  # (N, 5, Li, D)
+        att_vid = att_utils_dict["frame"].reshape(bsz, num_imgs, -1)  # (N, Li, D)
+        att_vid = att_vid.unsqueeze(1).expand([bsz, num_a, num_imgs, -1])
+        att_sub = att_utils_dict["sub"].reshape(bsz, num_imgs, -1)    # (N, Li, D)
+        att_sub = att_sub.unsqueeze(1).expand([bsz, num_a, num_imgs, -1])
+
         if self.concat_ctx:
-            concat_input_emb = torch.cat([attended_sub,
-                                          attended_vid,
-                                          attended_sub * attended_vid], dim=-1)  # (N, 5, Li, Lqa, 3D)
+            concat_input_emb = torch.cat([att_sub, att_vid, att_q], dim=-1)
             cls_input_emb = self.concat_fc(concat_input_emb)
             cls_input_mask = attended_vid_mask
+
+            # concat_input_emb = torch.cat([attended_sub,
+            #                               attended_vid,
+            #                               attended_sub * attended_vid], dim=-1)  # (N, 5, Li, Lqa, 3D)
+            # cls_input_emb = self.concat_fc(concat_input_emb)
+            # cls_input_mask = attended_vid_mask
         elif self.sub_flag:
             cls_input_emb = attended_sub
             cls_input_mask = attended_sub_mask

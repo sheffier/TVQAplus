@@ -63,7 +63,6 @@ class Pairwise(nn.Module):
             self.margin_Y = nn.Conv1d(self.x_spatial_dim, 1, 1)
 
     def forward(self, X, Y=None):
-
         X_t = X.transpose(1, 2)
         Y_t = Y.transpose(1, 2) if Y is not None else X_t
 
@@ -74,6 +73,7 @@ class Pairwise(nn.Module):
         Y_norm = F.normalize(Y_embed)
 
         S = X_norm.transpose(1, 2).bmm(Y_norm)
+
         if self.x_spatial_dim is not None:
             S = self.normalize_S(S.view(-1, self.x_spatial_dim * self.y_spatial_dim)) \
                 .view(-1, self.x_spatial_dim, self.y_spatial_dim)
@@ -183,7 +183,8 @@ class Atten(nn.Module):
                    and len(priors) == self.n_utils)
         # b_size = utils[0].size(0)
         util_poten = dict()
-        attention = list()
+        # attention = list()
+        attention = dict()
         if self.size_force:
             for util_name, util_shared_conf in self.sharing_factor_weights.items():
                 if util_name not in self.spatial_pool.keys():
@@ -273,7 +274,8 @@ class Atten(nn.Module):
                                                for p in util_poten[util_name]], dim=1)
             util_poten[util_name] = self.reduce_potentials[util_name](util_poten[util_name]).squeeze(1)
             util_poten[util_name] = F.softmax(util_poten[util_name], dim=1).unsqueeze(2)
-            attention.append(torch.bmm(utils[util_name].transpose(1, 2), util_poten[util_name]).squeeze(2))
+            # attention.append(torch.bmm(utils[util_name].transpose(1, 2), util_poten[util_name]).squeeze(2))
+            attention[util_name] = torch.bmm(utils[util_name].transpose(1, 2), util_poten[util_name]).squeeze(2)
 
         return attention
 
