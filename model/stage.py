@@ -281,7 +281,7 @@ class ClassifierHeadMultiProposal(nn.Module):
 
         bsz, num_a, num_img, _ = statement.shape
 
-        max_statement = statement
+        max_statement = statement.reshape(bsz * num_a, num_img, -1)
         # max_statement_mask =
 
         t_score_container = []
@@ -385,20 +385,16 @@ class Stage(pl.LightningModule):
                 nn.LayerNorm(hparams.hsz),
             )
 
-        utils_conf = {"qa_1": UtilsConf(emb_size=self.hsz, spatial_size=None),
-                      "qa_2": UtilsConf(emb_size=self.hsz, spatial_size=None),
-                      "qa_3": UtilsConf(emb_size=self.hsz, spatial_size=None),
-                      "qa_4": UtilsConf(emb_size=self.hsz, spatial_size=None),
-                      "qa_5": UtilsConf(emb_size=self.hsz, spatial_size=None),
+        utils_conf = {"qa": UtilsConf(emb_size=self.hsz, spatial_size=None),
                       "frame": UtilsConf(emb_size=self.hsz, spatial_size=None),
                       "sub": UtilsConf(emb_size=self.hsz, spatial_size=None)}
 
-        # sharing_factor_weights = {"hist_q": UtilSharedConf(num_utils=9, connected_list=["ans", "ques"]),
-        #                           "hist_a": UtilSharedConf(num_utils=9, connected_list=["ans", "ques"])}
+        sharing_factor_weights = {"qa": UtilSharedConf(num_utils=5, connected_list=["sub", "frame"])}
 
-        # self.mul_atten = Atten(utils_conf=utils_conf, sharing_factor_weights=sharing_factor_weights,
-        #                        prior_flag=False, pairwise_flag=True)
-        self.mul_atten = Atten(utils_conf=utils_conf, prior_flag=False, pairwise_flag=True)
+        self.mul_atten = Atten(utils_conf=utils_conf, sharing_factor_weights=sharing_factor_weights,
+                               prior_flag=False, pairwise_flag=True)
+        
+        # self.mul_atten = Atten(utils_conf=utils_conf, prior_flag=False, pairwise_flag=True)
 
         # self.qa_ctx_attn = StructuredAttentionWithDownsize(
         #     hparams.hsz,
@@ -477,37 +473,56 @@ class Stage(pl.LightningModule):
             # other_outputs["vid_normalized_s"] = vid_normalized_s
             # other_outputs["vid_raw_s"] = vid_raw_s
 
-        a_embed_fga = a_embed.unsqueeze(1).expand([bsz, num_imgs, num_a, -1, hsz]).reshape(bsz * num_imgs, num_a, -1, hsz)
-        a_embed_1 = a_embed_fga[:, 0, :, :]
-        a_embed_2 = a_embed_fga[:, 1, :, :]
-        a_embed_3 = a_embed_fga[:, 2, :, :]
-        a_embed_4 = a_embed_fga[:, 3, :, :]
-        a_embed_5 = a_embed_fga[:, 4, :, :]
+        # a_embed_fga = a_embed.unsqueeze(1).expand([bsz, num_imgs, num_a, -1, hsz]).reshape(bsz * num_imgs, num_a, -1, hsz)
+        # a_embed_1 = a_embed_fga[:, 0, :, :]
+        # a_embed_2 = a_embed_fga[:, 1, :, :]
+        # a_embed_3 = a_embed_fga[:, 2, :, :]
+        # a_embed_4 = a_embed_fga[:, 3, :, :]
+        # a_embed_5 = a_embed_fga[:, 4, :, :]
 
-        att_input = {"qa_1": a_embed_1,
-                     "qa_2": a_embed_2,
-                     "qa_3": a_embed_3,
-                     "qa_4": a_embed_4,
-                     "qa_5": a_embed_5,
-                     "frame": vid_embed,
-                     "sub": sub_embed}
+        # att_input = {"qa_1": a_embed_1,
+        #              "qa_2": a_embed_2,
+        #              "qa_3": a_embed_3,
+        #              "qa_4": a_embed_4,
+        #              "qa_5": a_embed_5,
+        #              "frame": vid_embed,
+        #              "sub": sub_embed}
 
         # priors = {"qa":,
         #           "frames":,
         #           "subs":}
 
-        att_utils_dict = self.mul_atten(att_input, a_embed.size(0), priors=None)
+        # att_utils_dict = self.mul_atten(att_input, a_embed_fga.size(0), priors=None)
 
-        att_q1 = att_utils_dict["qa_1"].reshape(bsz, num_imgs, -1)
-        att_q2 = att_utils_dict["qa_2"].reshape(bsz, num_imgs, -1)
-        att_q3 = att_utils_dict["qa_3"].reshape(bsz, num_imgs, -1)
-        att_q4 = att_utils_dict["qa_4"].reshape(bsz, num_imgs, -1)
-        att_q5 = att_utils_dict["qa_5"].reshape(bsz, num_imgs, -1)
-        att_q = torch.stack([att_q1, att_q2, att_q3, att_q4, att_q5], dim=1)  # (N, 5, Li, D)
-        att_vid = att_utils_dict["frame"].reshape(bsz, num_imgs, -1)  # (N, Li, D)
-        att_vid = att_vid.unsqueeze(1).expand([bsz, num_a, num_imgs, -1])
-        att_sub = att_utils_dict["sub"].reshape(bsz, num_imgs, -1)    # (N, Li, D)
-        att_sub = att_sub.unsqueeze(1).expand([bsz, num_a, num_imgs, -1])
+        # att_q1 = att_utils_dict["qa_1"].reshape(bsz, num_imgs, -1)
+        # att_q2 = att_utils_dict["qa_2"].reshape(bsz, num_imgs, -1)
+        # att_q3 = att_utils_dict["qa_3"].reshape(bsz, num_imgs, -1)
+        # att_q4 = att_utils_dict["qa_4"].reshape(bsz, num_imgs, -1)
+        # att_q5 = att_utils_dict["qa_5"].reshape(bsz, num_imgs, -1)
+        # att_q = torch.stack([att_q1, att_q2, att_q3, att_q4, att_q5], dim=1)  # (N, 5, Li, D)
+        # att_vid = att_utils_dict["frame"].reshape(bsz, num_imgs, -1)  # (N, Li, D)
+        # att_vid = att_vid.unsqueeze(1).expand([bsz, num_a, num_imgs, -1])
+        # att_sub = att_utils_dict["sub"].reshape(bsz, num_imgs, -1)    # (N, Li, D)
+        # att_sub = att_sub.unsqueeze(1).expand([bsz, num_a, num_imgs, -1])
+
+        a_embed_fga = a_embed.unsqueeze(1).expand([bsz, num_imgs, num_a, -1, hsz]).reshape(bsz * num_imgs * num_a, -1, hsz)
+
+        att_input = {"qa": a_embed_fga,  # (N * Li * 5, L, D)
+                     "frame": vid_embed, # (N * Li, Lr, D)
+                     "sub": sub_embed    # (N * Li, Lw, D)
+                     }
+
+        # priors = {"qa":,
+        #           "frames":,
+        #           "subs":}
+
+        att_utils_dict = self.mul_atten(att_input, vid_embed.size(0), priors=None)
+
+        att_q = att_utils_dict["qa"].reshape(bsz, num_imgs, num_a, -1).transpose(1, 2)  # (N, 5, Li, D)
+        att_vid = att_utils_dict["frame"].reshape(bsz, num_imgs, -1)                    # (N, Li, D)
+        att_vid = att_vid.unsqueeze(1).expand([bsz, num_a, num_imgs, -1])               # (N, 5, Li, D)
+        att_sub = att_utils_dict["sub"].reshape(bsz, num_imgs, -1)    # (N, Li, D)      # (N, Li, D)
+        att_sub = att_sub.unsqueeze(1).expand([bsz, num_a, num_imgs, -1])               # (N, 5, Li, D)
 
         if self.concat_ctx:
             concat_input_emb = torch.cat([att_sub, att_vid, att_q], dim=-1)

@@ -141,10 +141,11 @@ class Atten(nn.Module):
                         if util_name == util_a_name and util_b_name not in set(util_shared_conf.connected_list) \
                                 or util_b_name == util_name and util_a_name not in set(util_shared_conf.connected_list):
                             continue
-                    self.pp_models[f"({util_a_name}, {util_b_name})"] = Pairwise(util_a_conf.emb_size,
-                                                                                 util_a_conf.spatial_size,
-                                                                                 util_b_conf.emb_size,
-                                                                                 util_b_conf.spatial_size)
+                        else:
+                            self.pp_models[f"({util_a_name}, {util_b_name})"] = Pairwise(util_a_conf.emb_size,
+                                                                                         util_a_conf.spatial_size,
+                                                                                         util_b_conf.emb_size,
+                                                                                         util_b_conf.spatial_size)
 
         self.reduce_potentials = nn.ModuleDict()
         self.num_of_potentials = dict()
