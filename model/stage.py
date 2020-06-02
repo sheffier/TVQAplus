@@ -119,7 +119,7 @@ class ClassifierHeadMultiProposal(nn.Module):
         self.t_iter = t_iter
         self.add_local = add_local
 
-        self.cls_encoder = StackedEncoder(stacked_enc_conf)
+        # self.cls_encoder = StackedEncoder(stacked_enc_conf)
 
         self.cls_projection_layers = nn.ModuleList(
             [
