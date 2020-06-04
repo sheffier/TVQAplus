@@ -34,6 +34,7 @@ class Config:
         self.parser.add_argument("--max_es_cnt", type=int, default=5, help="number of epochs to early stop")
         self.parser.add_argument("--bsz", type=int, default=16, help="mini-batch size")
         self.parser.add_argument("--test_bsz", type=int, default=16, help="mini-batch size for testing")
+        self.parser.add_argument("--exp_name", type=str, default="tvqa", help="experiment name")
 
         self.parser = model_cls.add_model_specific_args(self.parser)
 
