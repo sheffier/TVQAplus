@@ -282,7 +282,7 @@ class ClassifierHeadMultiProposal(nn.Module):
         bsz, num_a, num_img, _ = statement.shape
 
         max_statement = statement.reshape(bsz * num_a, num_img, -1)
-        max_statement_mask = statement_mask.contiguous().reshape(bsz, num_a, num_img, 1)
+        max_statement_mask = statement_mask
 
         t_score_container = []
         encoded_max_statement_container = []
@@ -425,9 +425,7 @@ class Stage(pl.LightningModule):
         a_embed = self.text_encoder(batch["qas_bert"].view(bsz * num_a, -1, self.wd_size),  # (N*5, L, D)
                                     batch["qas_mask"].view(bsz * num_a, -1))                # (N*5, L)
         a_embed = a_embed.view(bsz, num_a, -1, hsz)  # (N, 5, L, D)
-
-        # a_embed = a_embed.view(bsz, num_a, 1, -1, hsz)  # (N, 5, 1, L, D)
-        # a_mask = batch["qas_mask"].view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
+        a_mask = batch["qas_mask"].view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
 
         attended_sub, attended_vid, attended_vid_mask, attended_sub_mask = (None,) * 4
         # other_outputs = {}  # {"pos_noun_mask": batch.qa_noun_masks}  # used to visualization and compute att acc
@@ -437,11 +435,7 @@ class Stage(pl.LightningModule):
             # (N*Li, Lw, D)
             sub_embed = self.text_encoder(batch["sub_bert"].view(bsz * num_imgs, num_words, -1),  # (N*Li, Lw, D)
                                           batch["sub_mask"].view(bsz * num_imgs, num_words))      # (N*Li, Lw)
-
-            # sub_embed = sub_embed.contiguous().view(bsz, num_imgs, num_words, -1)  # (N, Li, Lw, D)
-
-            # sub_embed = sub_embed.contiguous().view(bsz, 1, num_imgs, num_words, -1)  # (N, 1, Li, Lw, D)
-            # sub_mask = batch["sub_mask"].view(bsz, 1, num_imgs, num_words)  # (N, 1, Li, Lw)
+            sub_mask = batch["sub_mask"].view(bsz * num_imgs, num_words)  # (N*Li, Lw)
 
             # attended_sub, attended_sub_mask, sub_raw_s, sub_normalized_s = \
             #     self.qa_ctx_attn(a_embed, sub_embed, a_mask, sub_mask,
@@ -456,7 +450,7 @@ class Stage(pl.LightningModule):
             # (N*Li, L, D)
             vid_embed = self.vid_encoder(vid_embed.view(bsz * num_imgs, num_regions, -1),      # (N*Li, Lw)
                                          batch["vid_mask"].view(bsz * num_imgs, num_regions))  # (N*Li, Lr)
-            vid_mask = batch["vid_mask"].view(bsz * num_imgs, num_regions)  # (N*Li, Lr)
+            vid_mask = batch["vid_mask"].view(bsz, 1, num_imgs, num_regions)  # (N, 1, Li, Lr)
 
             # attended_vid, attended_vid_mask, vid_raw_s, vid_normalized_s = \
             #     self.qa_ctx_attn(a_embed, vid_embed, a_mask, vid_mask,
@@ -487,15 +481,19 @@ class Stage(pl.LightningModule):
             concat_input_emb = torch.cat([att_sub, att_vid, att_q], dim=-1)
             cls_input_emb = self.concat_fc(concat_input_emb)
             cls_input_emb = cls_input_emb.transpose(2, 1)
-            cls_input_mask = (vid_mask.sum(-1) != 0).float().view(bsz, num_imgs).unsqueeze(1).expand([bsz, num_a, num_imgs])
-        elif self.sub_flag:
-            cls_input_emb = attended_sub
-            cls_input_mask = attended_sub_mask
-        elif self.vfeat_flag:
-            cls_input_emb = attended_vid
-            cls_input_mask = attended_vid_mask
-        else:
-            raise NotImplementedError
+
+            cls_input_mask = torch.matmul(a_mask.unsqueeze(-1), vid_mask.unsqueeze(-2))
+            cls_input_mask = (cls_input_mask.sum(-1) != 0).float()
+            cls_input_mask = (cls_input_mask.sum(-1) != 0).float().view(bsz, num_a, num_imgs, 1)
+        #
+        # elif self.sub_flag:
+        #     cls_input_emb = attended_sub
+        #     cls_input_mask = attended_sub_mask
+        # elif self.vfeat_flag:
+        #     cls_input_emb = attended_vid
+        #     cls_input_mask = attended_vid_mask
+        # else:
+        #     raise NotImplementedError
 
         out, target, t_scores = self.classfier_head_multi_proposal(
             cls_input_emb, cls_input_mask, batch["target"], batch["ts_label"], batch["ts_label_mask"],
