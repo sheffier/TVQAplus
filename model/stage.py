@@ -7,7 +7,7 @@ import argparse
 
 from argparse import Namespace
 from torch.utils.data import DataLoader
-from tvqa_dataset import TVQACommonDataset, TVQASplitDataset, pad_collate, PadCollate
+from tvqa_dataset import TVQACommonDataset, TVQASplitDataset, PadCollate
 # from .context_query_attention import StructuredAttentionWithDownsize
 from model.atten import Atten, UtilSharedConf, UtilsConf
 from .encoder import StackedEncoder, StackedEncoderConf
@@ -282,7 +282,7 @@ class ClassifierHeadMultiProposal(nn.Module):
         bsz, num_a, num_img, _ = statement.shape
 
         max_statement = statement.reshape(bsz * num_a, num_img, -1)
-        # max_statement_mask =
+        max_statement_mask = statement_mask.contiguous().reshape(bsz, num_a, num_img, 1)
 
         t_score_container = []
         encoded_max_statement_container = []
@@ -309,10 +309,10 @@ class ClassifierHeadMultiProposal(nn.Module):
                 targets, ts_labels, max_num_proposal=max_num_proposal, iou_thd=iou_thd,
                 ce_prob_thd=ce_prob_thd, extra_span_length=extra_span_length)  # (N, 5, D)
         else:
-            # max_max_statement = \
-            #     torch.max(mask_logits(stacked_max_statement, max_statement_mask), 2)[0]  # (N, 5, D)
             max_max_statement = \
-                torch.max(stacked_max_statement, 2)[0]  # (N, 5, D)
+                torch.max(mask_logits(stacked_max_statement, max_statement_mask), 2)[0]  # (N, 5, D)
+            # max_max_statement = \
+            #     torch.max(stacked_max_statement, 2)[0]  # (N, 5, D)
 
             # targets = targets
 
@@ -448,9 +448,6 @@ class Stage(pl.LightningModule):
             #                      noun_mask=None,
             #                      void_vector=None)
 
-            # other_outputs["sub_normalized_s"] = sub_normalized_s
-            # other_outputs["sub_raw_s"] = sub_raw_s
-
         vid_raw_s = None
         if self.vfeat_flag:
             num_imgs, num_regions = batch["vid"].shape[1:3]
@@ -459,57 +456,19 @@ class Stage(pl.LightningModule):
             # (N*Li, L, D)
             vid_embed = self.vid_encoder(vid_embed.view(bsz * num_imgs, num_regions, -1),      # (N*Li, Lw)
                                          batch["vid_mask"].view(bsz * num_imgs, num_regions))  # (N*Li, Lr)
-
-            # vid_embed = vid_embed.contiguous().view(bsz, num_imgs, num_regions, -1)  # (N, Li, Lr, D)
-
-            # vid_embed = vid_embed.contiguous().view(bsz, 1, num_imgs, num_regions, -1)  # (N, 1, Li, Lr, D)
-            # vid_mask = batch["vid_mask"].view(bsz, 1, num_imgs, num_regions)  # (N, 1, Li, Lr)
+            vid_mask = batch["vid_mask"].view(bsz * num_imgs, num_regions)  # (N*Li, Lr)
 
             # attended_vid, attended_vid_mask, vid_raw_s, vid_normalized_s = \
             #     self.qa_ctx_attn(a_embed, vid_embed, a_mask, vid_mask,
             #                      noun_mask=None,
             #                      void_vector=None)
 
-            # other_outputs["vid_normalized_s"] = vid_normalized_s
-            # other_outputs["vid_raw_s"] = vid_raw_s
-
-        # a_embed_fga = a_embed.unsqueeze(1).expand([bsz, num_imgs, num_a, -1, hsz]).reshape(bsz * num_imgs, num_a, -1, hsz)
-        # a_embed_1 = a_embed_fga[:, 0, :, :]
-        # a_embed_2 = a_embed_fga[:, 1, :, :]
-        # a_embed_3 = a_embed_fga[:, 2, :, :]
-        # a_embed_4 = a_embed_fga[:, 3, :, :]
-        # a_embed_5 = a_embed_fga[:, 4, :, :]
-
-        # att_input = {"qa_1": a_embed_1,
-        #              "qa_2": a_embed_2,
-        #              "qa_3": a_embed_3,
-        #              "qa_4": a_embed_4,
-        #              "qa_5": a_embed_5,
-        #              "frame": vid_embed,
-        #              "sub": sub_embed}
-
-        # priors = {"qa":,
-        #           "frames":,
-        #           "subs":}
-
-        # att_utils_dict = self.mul_atten(att_input, a_embed_fga.size(0), priors=None)
-
-        # att_q1 = att_utils_dict["qa_1"].reshape(bsz, num_imgs, -1)
-        # att_q2 = att_utils_dict["qa_2"].reshape(bsz, num_imgs, -1)
-        # att_q3 = att_utils_dict["qa_3"].reshape(bsz, num_imgs, -1)
-        # att_q4 = att_utils_dict["qa_4"].reshape(bsz, num_imgs, -1)
-        # att_q5 = att_utils_dict["qa_5"].reshape(bsz, num_imgs, -1)
-        # att_q = torch.stack([att_q1, att_q2, att_q3, att_q4, att_q5], dim=1)  # (N, 5, Li, D)
-        # att_vid = att_utils_dict["frame"].reshape(bsz, num_imgs, -1)  # (N, Li, D)
-        # att_vid = att_vid.unsqueeze(1).expand([bsz, num_a, num_imgs, -1])
-        # att_sub = att_utils_dict["sub"].reshape(bsz, num_imgs, -1)    # (N, Li, D)
-        # att_sub = att_sub.unsqueeze(1).expand([bsz, num_a, num_imgs, -1])
 
         a_embed_fga = a_embed.unsqueeze(1).expand([bsz, num_imgs, num_a, -1, hsz]).reshape(bsz * num_imgs * num_a, -1, hsz)
 
-        att_input = {"qa": a_embed_fga,  # (N * Li * 5, L, D)
-                     "frame": vid_embed, # (N * Li, Lr, D)
-                     "sub": sub_embed    # (N * Li, Lw, D)
+        att_input = {"qa": a_embed_fga,   # (N * Li * 5, L, D)
+                     "frame": vid_embed,  # (N * Li, Lr, D)
+                     "sub": sub_embed     # (N * Li, Lw, D)
                      }
 
         # priors = {"qa":,
@@ -518,22 +477,17 @@ class Stage(pl.LightningModule):
 
         att_utils_dict = self.mul_atten(att_input, vid_embed.size(0), priors=None)
 
-        att_q = att_utils_dict["qa"].reshape(bsz, num_imgs, num_a, -1).transpose(1, 2)  # (N, 5, Li, D)
-        att_vid = att_utils_dict["frame"].reshape(bsz, num_imgs, -1)                    # (N, Li, D)
-        att_vid = att_vid.unsqueeze(1).expand([bsz, num_a, num_imgs, -1])               # (N, 5, Li, D)
-        att_sub = att_utils_dict["sub"].reshape(bsz, num_imgs, -1)    # (N, Li, D)      # (N, Li, D)
-        att_sub = att_sub.unsqueeze(1).expand([bsz, num_a, num_imgs, -1])               # (N, 5, Li, D)
+        att_q = att_utils_dict["qa"].reshape(bsz, num_imgs, num_a, -1)     # (N, Li, 5, D)
+        att_vid = att_utils_dict["frame"].reshape(bsz, num_imgs, -1)       # (N, Li, D)
+        att_vid = att_vid.unsqueeze(2).expand([bsz, num_imgs, num_a, -1])  # (N, Li, 5, D)
+        att_sub = att_utils_dict["sub"].reshape(bsz, num_imgs, -1)         # (N, Li, D)
+        att_sub = att_sub.unsqueeze(2).expand([bsz, num_imgs, num_a, -1])  # (N, Li, 5, D)
 
         if self.concat_ctx:
             concat_input_emb = torch.cat([att_sub, att_vid, att_q], dim=-1)
             cls_input_emb = self.concat_fc(concat_input_emb)
-            cls_input_mask = attended_vid_mask
-
-            # concat_input_emb = torch.cat([attended_sub,
-            #                               attended_vid,
-            #                               attended_sub * attended_vid], dim=-1)  # (N, 5, Li, Lqa, 3D)
-            # cls_input_emb = self.concat_fc(concat_input_emb)
-            # cls_input_mask = attended_vid_mask
+            cls_input_emb = cls_input_emb.transpose(2, 1)
+            cls_input_mask = (vid_mask.sum(-1) != 0).float().view(bsz, num_imgs).unsqueeze(1).expand([bsz, num_a, num_imgs])
         elif self.sub_flag:
             cls_input_emb = attended_sub
             cls_input_mask = attended_sub_mask
@@ -548,8 +502,6 @@ class Stage(pl.LightningModule):
             extra_span_length=self.extra_span_length)
 
         assert len(out) == len(target)
-
-        # other_outputs["temporal_scores"] = t_scores  # (N, 5, Li) or (N, 5, Li, 2)
 
         # return out, target, att_predictions, t_scores
         return out, target, t_scores, vid_raw_s
