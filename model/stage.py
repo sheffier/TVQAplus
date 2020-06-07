@@ -407,7 +407,7 @@ class Stage(pl.LightningModule):
         a_mask = batch["qas_mask"].view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
 
         attended_sub, attended_vid, attended_vid_mask, attended_sub_mask = (None,) * 4
-        # other_outputs = {}  # {"pos_noun_mask": batch.qa_noun_masks}  # used to visualization and compute att acc
+
         if self.sub_flag:
             num_imgs, num_words = batch["sub_bert"].shape[1:3]
 
@@ -422,9 +422,6 @@ class Stage(pl.LightningModule):
                 self.qa_ctx_attn(a_embed, sub_embed, a_mask, sub_mask,
                                  noun_mask=None,
                                  void_vector=None)
-
-            # other_outputs["sub_normalized_s"] = sub_normalized_s
-            # other_outputs["sub_raw_s"] = sub_raw_s
 
         vid_raw_s = None
         if self.vfeat_flag:
@@ -442,9 +439,6 @@ class Stage(pl.LightningModule):
                 self.qa_ctx_attn(a_embed, vid_embed, a_mask, vid_mask,
                                  noun_mask=None,
                                  void_vector=None)
-
-            # other_outputs["vid_normalized_s"] = vid_normalized_s
-            # other_outputs["vid_raw_s"] = vid_raw_s
 
         if self.concat_ctx:
             concat_input_emb = torch.cat([attended_sub,
@@ -467,9 +461,6 @@ class Stage(pl.LightningModule):
 
         assert len(out) == len(target)
 
-        # other_outputs["temporal_scores"] = t_scores  # (N, 5, Li) or (N, 5, Li, 2)
-
-        # return out, target, att_predictions, t_scores
         return out, target, t_scores, vid_raw_s
 
     def on_epoch_start(self):
@@ -511,8 +502,6 @@ class Stage(pl.LightningModule):
                                              ts_labels=batch["ts_label"],
                                              answer_indices=batch["target"])
 
-            # att_loss = att_loss.sum()
-            # temporal_loss = temporal_loss.sum()
             cls_loss = self.criterion(outputs, targets)
             qids = batch["qid"]
             # keep the cls_loss at the same magnitude as only classifying batch_size objects
@@ -554,9 +543,6 @@ class Stage(pl.LightningModule):
             train_att_loss = output['att_loss']
             train_temporal_loss = output['temporal_loss']
 
-            # reduce manually when using dp
-            # if self.use_dp or self.use_ddp2:
-            #     train_total_loss = torch.mean(train_total_loss)
             train_total_loss_mean += train_total_loss
             train_cls_loss_mean += train_cls_loss
             train_att_loss_mean += train_att_loss
@@ -588,7 +574,6 @@ class Stage(pl.LightningModule):
                                          ts_labels=batch["ts_label"],
                                          answer_indices=batch["target"])
 
-        # temporal_loss = temporal_loss.sum()
         cls_loss = self.criterion(outputs, batch["target"])
         loss = cls_loss + self.hparams.ts_weight * temporal_loss
 
@@ -618,10 +603,6 @@ class Stage(pl.LightningModule):
             val_total_loss = output['val_loss']
             val_cls_loss = output['valid_cls_loss']
             val_temporal_loss = output['valid_temporal_loss']
-
-            # # reduce manually when using dp
-            # if self.use_dp or self.use_ddp2:
-            #     val_loss = torch.mean(val_loss)
 
             val_total_loss_mean += val_total_loss
             val_cls_loss_mean += val_cls_loss
@@ -676,7 +657,6 @@ class Stage(pl.LightningModule):
     def train_dataloader(self):
         common_dset = TVQACommonDataset(self.hparams)
         train_dset = TVQASplitDataset(common_dset, self.hparams.train_path, "train")
-        # self.hparams.vocab_size = len(common_dset.word2idx)
 
         train_loader = DataLoader(train_dset, batch_size=self.hparams.bsz, shuffle=True,
                                   collate_fn=self.pad_collate,
