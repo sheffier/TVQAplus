@@ -270,54 +270,18 @@ class ClassifierHeadMultiProposal(nn.Module):
             extra_span_length (int): expand the localized span to give a little bit extra context
         Returns:
         """
-        # bsz, num_a, num_img, num_words = statement_mask.shape
-
-        # statement = statement.view(bsz * num_a * num_img, num_words, -1)  # (N*5*Li, Lqa, D)
-        # statement_mask = statement_mask.view(bsz * num_a * num_img, num_words)  # (N*5*Li, Lqa)
-        # statement = self.cls_encoder(statement, statement_mask)  # (N*5*Li, Lqa, D)
-        # max_statement = torch.max(mask_logits(statement, statement_mask.unsqueeze(2)), 1)[0]  # (N*5*Li, D)
-        # max_statement_mask = (statement_mask.sum(1) != 0).float().view(bsz, num_a, num_img, 1)  # (N, 5, Li, 1)
-        # max_statement = max_statement.view(bsz * num_a, num_img, -1)  # (N, 5, Li, D)
-
         bsz, num_a, num_img, _ = statement.shape
 
         max_statement = statement.reshape(bsz * num_a, num_img, -1)
         max_statement_mask = statement_mask
 
-        t_score_container = []
-        encoded_max_statement_container = []
-        encoded_max_statement = max_statement  # (N*5, Li, D)
-        for layer_idx in range(self.t_iter + 1):
-            encoded_max_statement, prev_t_score = \
-                self.residual_temporal_predictor(layer_idx, encoded_max_statement)
-            t_score_container.append(prev_t_score.view(bsz, num_a, num_img, 2))  # (N, 5, Li, 2)
-            encoded_max_statement_container.append(encoded_max_statement)  # (N*5, Li, D)
-        if self.t_iter > 0:
-            temporal_scores_st_ed = 0.5 * (t_score_container[0] + torch.stack(t_score_container[:1]).mean(0))
-        else:
-            temporal_scores_st_ed = t_score_container[0]  # (N, 5, Li, 2)
-
-        # mask before softmax
-        temporal_scores_st_ed = mask_logits(temporal_scores_st_ed, ts_labels_mask.view(bsz, 1, num_img, 1))
-
-        # when predict answer, only consider 1st level representation !!!
-        # since the others are all generated from the 1st level
-        stacked_max_statement = encoded_max_statement_container[0].view(bsz, num_a, num_img, -1)  # (N, 5, Li, D)
-        if self.add_local:
-            max_max_statement, targets = self.get_proposals(
-                stacked_max_statement, max_statement_mask, temporal_scores_st_ed,
-                targets, ts_labels, max_num_proposal=max_num_proposal, iou_thd=iou_thd,
-                ce_prob_thd=ce_prob_thd, extra_span_length=extra_span_length)  # (N, 5, D)
-        else:
-            max_max_statement = \
-                torch.max(mask_logits(stacked_max_statement, max_statement_mask), 2)[0]  # (N, 5, D)
-            # max_max_statement = \
-            #     torch.max(stacked_max_statement, 2)[0]  # (N, 5, D)
-
-            # targets = targets
+        encoded_max_statement = max_statement + self.cls_projection_layers[0](max_statement)  # (N*5, Li, D)
+        encoded_max_statement = encoded_max_statement.view(bsz, num_a, num_img, -1)  # (N, 5, Li, D)
+        max_max_statement = torch.max(mask_logits(encoded_max_statement, max_statement_mask), 2)[0]  # (N, 5, D)
 
         answer_scores = self.classifier(max_max_statement).squeeze(2)  # (N, 5)
-        return answer_scores, targets, temporal_scores_st_ed  # (N_new, 5), (N_new, ) (N, 5, Li, 2)
+
+        return answer_scores
 
 
 class Stage(pl.LightningModule):
@@ -376,15 +340,6 @@ class Stage(pl.LightningModule):
         if self.vfeat_flag:
             self.vid_encoder = InputVideoEncoder(hparams.vfeat_size, bridge_hsz, hparams.dropout, common_encoder)
 
-        if self.concat_ctx:
-            self.concat_fc = nn.Sequential(
-                nn.LayerNorm(3 * hparams.hsz),
-                nn.Dropout(hparams.dropout),
-                nn.Linear(3 * hparams.hsz, hparams.hsz),
-                nn.ReLU(True),
-                nn.LayerNorm(hparams.hsz),
-            )
-
         utils_conf = {"qa": UtilsConf(emb_size=self.hsz, spatial_size=None),
                       "frame": UtilsConf(emb_size=self.hsz, spatial_size=None),
                       "sub": UtilsConf(emb_size=self.hsz, spatial_size=None)}
@@ -393,6 +348,15 @@ class Stage(pl.LightningModule):
 
         self.mul_atten = Atten(utils_conf=utils_conf, sharing_factor_weights=sharing_factor_weights,
                                prior_flag=False, pairwise_flag=True)
+
+        if self.concat_ctx:
+            self.concat_fc = nn.Sequential(
+                nn.LayerNorm(3 * hparams.hsz),
+                nn.Dropout(hparams.dropout),
+                nn.Linear(3 * hparams.hsz, hparams.hsz),
+                nn.ReLU(True),
+                nn.LayerNorm(hparams.hsz),
+            )
 
         cls_stack_enc_conf = StackedEncoderConf(n_blocks=hparams.cls_encoder_n_blocks,
                                                 n_conv=hparams.cls_encoder_n_conv,
@@ -419,26 +383,20 @@ class Stage(pl.LightningModule):
         a_embed = a_embed.view(bsz, num_a, -1, hsz)  # (N, 5, L, D)
         a_mask = batch["qas_mask"].view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
 
-        attended_sub, attended_vid, attended_vid_mask, attended_sub_mask = (None,) * 4
+        num_imgs, num_words = batch["sub_bert"].shape[1:3]
 
-        if self.sub_flag:
-            num_imgs, num_words = batch["sub_bert"].shape[1:3]
+        # (N*Li, Lw, D)
+        sub_embed = self.text_encoder(batch["sub_bert"].view(bsz * num_imgs, num_words, -1),  # (N*Li, Lw, D)
+                                      batch["sub_mask"].view(bsz * num_imgs, num_words))      # (N*Li, Lw)
+        sub_mask = batch["sub_mask"].view(bsz * num_imgs, num_words)  # (N*Li, Lw)
 
-            # (N*Li, Lw, D)
-            sub_embed = self.text_encoder(batch["sub_bert"].view(bsz * num_imgs, num_words, -1),  # (N*Li, Lw, D)
-                                          batch["sub_mask"].view(bsz * num_imgs, num_words))      # (N*Li, Lw)
-            sub_mask = batch["sub_mask"].view(bsz * num_imgs, num_words)  # (N*Li, Lw)
+        num_imgs, num_regions = batch["vid"].shape[1:3]
+        vid_embed = F.normalize(batch["vid"], p=2, dim=-1)  # (N, Li, Lr, D)
 
-
-        vid_raw_s = None
-        if self.vfeat_flag:
-            num_imgs, num_regions = batch["vid"].shape[1:3]
-            vid_embed = F.normalize(batch["vid"], p=2, dim=-1)  # (N, Li, Lr, D)
-
-            # (N*Li, L, D)
-            vid_embed = self.vid_encoder(vid_embed.view(bsz * num_imgs, num_regions, -1),      # (N*Li, Lw)
-                                         batch["vid_mask"].view(bsz * num_imgs, num_regions))  # (N*Li, Lr)
-            vid_mask = batch["vid_mask"].view(bsz, 1, num_imgs, num_regions)  # (N, 1, Li, Lr)
+        # (N*Li, L, D)
+        vid_embed = self.vid_encoder(vid_embed.view(bsz * num_imgs, num_regions, -1),      # (N*Li, Lw)
+                                     batch["vid_mask"].view(bsz * num_imgs, num_regions))  # (N*Li, Lr)
+        vid_mask = batch["vid_mask"].view(bsz, 1, num_imgs, num_regions)  # (N, 1, Li, Lr)
 
         a_embed_fga = a_embed.unsqueeze(1).expand([bsz, num_imgs, num_a, -1, hsz]).reshape(bsz * num_imgs * num_a, -1, hsz)
 
@@ -470,67 +428,31 @@ class Stage(pl.LightningModule):
         else:
             raise NotImplementedError
 
-        out, target, t_scores = self.classfier_head_multi_proposal(
+        out = self.classfier_head_multi_proposal(
             cls_input_emb, cls_input_mask, batch["target"], batch["ts_label"], batch["ts_label_mask"],
             extra_span_length=self.extra_span_length)
 
-        assert len(out) == len(target)
+        assert len(out) == len(batch["target"])
 
-        return out, target, t_scores, vid_raw_s
+        return out
 
     def on_epoch_start(self):
         self.use_hard_negatives = self.current_epoch + 1 > self.hard_negative_start
 
     def training_step(self, batch, batch_idx):
         try:
-            outputs, targets, t_scores, vid_raw_s = self.forward(batch)
-
-            att_loss = 0
-            att_predictions = None
-            if self.use_sup_att and self.vfeat_flag:
-                start_indices = batch["anno_st_idx"]
-                try:
-                    cur_att_loss, cur_att_predictions = \
-                        self.get_att_loss(vid_raw_s, batch["att_labels"], batch["target"],
-                                          batch["qas"],
-                                          qids=batch["qid"],
-                                          q_lens=batch["q_l"],
-                                          vid_names=batch["vid_name"],
-                                          img_indices=batch["image_indices"],
-                                          boxes=batch["boxes"],
-                                          start_indices=start_indices,
-                                          num_negatives=self.num_negatives,
-                                          use_hard_negatives=self.use_hard_negatives,
-                                          drop_topk=self.drop_topk)
-                except AssertionError as e:
-                    print(e)
-                    save_pickle(
-                        {"batch": batch, "start_indices": start_indices, "vid_raw_s": vid_raw_s},
-                        "err_dict.pickle"
-                    )
-                    import sys
-                    sys.exit(1)
-                att_loss += cur_att_loss
-                att_predictions = cur_att_predictions
-
-            temporal_loss = self.get_ts_loss(temporal_scores=t_scores,
-                                             ts_labels=batch["ts_label"],
-                                             answer_indices=batch["target"])
+            outputs = self.forward(batch)
+            targets = batch["target"]
 
             cls_loss = self.criterion(outputs, targets)
-            qids = batch["qid"]
-            # keep the cls_loss at the same magnitude as only classifying batch_size objects
-            cls_loss = cls_loss * (1.0 * len(qids) / len(targets))
-            loss = cls_loss + self.hparams.att_weight * att_loss + self.hparams.ts_weight * temporal_loss
+            loss = cls_loss
 
             # measure accuracy and record loss
-            pred_ids = outputs.argmax(dim=1, keepdim=True)
-            correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum().item()
+            with torch.no_grad():
+                pred_ids = outputs.argmax(dim=1, keepdim=True)
+                correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum().item()
 
             return {'loss': loss,
-                    'cls_loss': cls_loss,
-                    'att_loss': att_loss,
-                    'temporal_loss': temporal_loss,
                     'train_n_correct': correct_ids,
                     'train_n_ids': len(pred_ids)
                     }
@@ -549,30 +471,15 @@ class Stage(pl.LightningModule):
         accuracy = float(n_total_correct_ids) / float(n_total_ids)
 
         train_total_loss_mean = 0.0
-        train_cls_loss_mean = 0.0
-        train_att_loss_mean = 0.0
-        train_temporal_loss_mean = 0.0
         for output in outputs:
             train_total_loss = output['loss']
-            train_cls_loss = output['cls_loss']
-            train_att_loss = output['att_loss']
-            train_temporal_loss = output['temporal_loss']
 
             train_total_loss_mean += train_total_loss
-            train_cls_loss_mean += train_cls_loss
-            train_att_loss_mean += train_att_loss
-            train_temporal_loss_mean += train_temporal_loss
 
         train_total_loss_mean /= n_total_ids
-        train_cls_loss_mean /= n_total_ids
-        train_att_loss_mean /= n_total_ids
-        train_temporal_loss_mean /= n_total_ids
 
         metric_dict = {'train_loss': train_total_loss_mean, 'train_acc': accuracy}
         logger_logs = {'train_total_loss': train_total_loss_mean,
-                       'train_cls_loss': train_cls_loss_mean,
-                       'train_att_loss': train_att_loss_mean,
-                       'train_temporal_loss': train_temporal_loss_mean,
                        'train_acc': accuracy,
                        'n_total_ids': n_total_ids
                        }
@@ -583,24 +490,17 @@ class Stage(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         # OPTIONAL
-        outputs, _, t_scores, _ = self.forward(batch)
+        outputs = self.forward(batch)
+        targets = batch["target"]
 
-        temporal_loss = self.get_ts_loss(temporal_scores=t_scores,
-                                         ts_labels=batch["ts_label"],
-                                         answer_indices=batch["target"])
-
-        # temporal_loss = temporal_loss.sum()
         cls_loss = self.criterion(outputs, batch["target"])
-        loss = cls_loss + self.hparams.ts_weight * temporal_loss
+        loss = cls_loss
 
         # measure accuracy and record loss
         pred_ids = outputs.argmax(dim=1, keepdim=True)
-        targets = batch["target"]
         correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum().item()
 
         return {'val_loss': loss,
-                'valid_cls_loss': cls_loss,
-                'valid_temporal_loss': temporal_loss,
                 'valid_n_correct': correct_ids,
                 'valid_n_ids': len(pred_ids)
                 }
@@ -613,25 +513,15 @@ class Stage(pl.LightningModule):
         accuracy = float(n_total_correct_ids) / float(n_total_ids)
 
         val_total_loss_mean = 0.0
-        val_cls_loss_mean = 0.0
-        val_temporal_loss_mean = 0.0
         for output in outputs:
             val_total_loss = output['val_loss']
-            val_cls_loss = output['valid_cls_loss']
-            val_temporal_loss = output['valid_temporal_loss']
 
             val_total_loss_mean += val_total_loss
-            val_cls_loss_mean += val_cls_loss
-            val_temporal_loss_mean += val_temporal_loss
 
         val_total_loss_mean /= n_total_ids
-        val_cls_loss_mean /= n_total_ids
-        val_temporal_loss_mean /= n_total_ids
 
         metric_dict = {'val_loss': val_total_loss_mean, 'val_acc': accuracy}
         logger_logs = {'valid_total_loss': val_total_loss_mean,
-                       'valid_cls_loss': val_cls_loss_mean,
-                       'valid_temporal_loss': val_temporal_loss_mean,
                        'valid_acc': accuracy
                        }
 
