@@ -125,16 +125,18 @@ class Atten(nn.Module):
         self.sharing_factor_weights = sharing_factor_weights if sharing_factor_weights is not None else {}
         self.sharing_factors_set = set([shared_util_key for shared_util_key in self.sharing_factor_weights])
 
-        for util_name, util_conf in utils_conf.items():
-            self.un_models[util_name] = Unary(util_conf.emb_size)
-            if self.size_force:
-                self.spatial_pool[util_name] = nn.AdaptiveAvgPool1d(util_conf.spatial_size)
+        if self.unary_flag:
+            for util_name, util_conf in utils_conf.items():
+                self.un_models[util_name] = Unary(util_conf.emb_size)
+                if self.size_force:
+                    self.spatial_pool[util_name] = nn.AdaptiveAvgPool1d(util_conf.spatial_size)
 
         self.pp_models = nn.ModuleDict()
         for ((util_a_name, util_a_conf), (util_b_name, util_b_conf)) \
                 in combinations_with_replacement(utils_conf.items(), 2):
             if util_a_name == util_b_name:
-                self.pp_models[util_a_name] = Pairwise(util_a_conf.emb_size, util_a_conf.spatial_size)
+                if self.self_flag:
+                    self.pp_models[util_a_name] = Pairwise(util_a_conf.emb_size, util_a_conf.spatial_size)
             else:
                 if pairwise_flag:
                     for util_name, util_shared_conf in self.sharing_factor_weights.items():
@@ -235,7 +237,7 @@ class Atten(nn.Module):
                             print(e)
                             raise
 
-                    util_poten[util_name].append(poten_ij)
+                    util_poten.setdefault(util_name, []).append(poten_ij)
                     util_poten.setdefault(c_u_name, []).append(poten_ji.view(b_size, util_shared_conf.num_utils,
                                                                              poten_ji.size(1)))
 
