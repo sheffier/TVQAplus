@@ -119,8 +119,6 @@ class ClassifierHeadMultiProposal(nn.Module):
         self.t_iter = t_iter
         self.add_local = add_local
 
-        # self.cls_encoder = StackedEncoder(stacked_enc_conf)
-
         self.cls_projection_layers = nn.ModuleList(
             [
                 LinearWrapper(in_hsz=hsz,
@@ -137,22 +135,6 @@ class ClassifierHeadMultiProposal(nn.Module):
                            dropout=stacked_enc_conf.dropout,
                            relu=True)
                 for _ in range(t_iter)])
-
-        self.temporal_scoring_st_layers = nn.ModuleList([
-            LinearWrapper(in_hsz=hsz,
-                          out_hsz=1,
-                          layer_norm=True,
-                          dropout=stacked_enc_conf.dropout,
-                          relu=False)
-            for _ in range(t_iter+1)])
-
-        self.temporal_scoring_ed_layers = nn.ModuleList([
-            LinearWrapper(in_hsz=hsz,
-                          out_hsz=1,
-                          layer_norm=True,
-                          dropout=stacked_enc_conf.dropout,
-                          relu=False)
-            for _ in range(t_iter+1)])
 
         self.classifier = LinearWrapper(in_hsz=hsz * 2 if add_local else hsz,
                                         out_hsz=1,
