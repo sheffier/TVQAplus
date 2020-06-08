@@ -18,12 +18,13 @@ class UtilSharedConf(NamedTuple):
 
 
 class Unary(nn.Module):
-    def __init__(self, embed_size):
+    def __init__(self, embed_size, dropout=0.5):
         """
             Captures local entity information
         :param embed_size:  the embedding dimension
         """
         super(Unary, self).__init__()
+        self.dropout = dropout
         self.embed = nn.Conv1d(embed_size, embed_size, 1)
         self.feature_reduce = nn.Conv1d(embed_size, 1, 1)
 
@@ -32,13 +33,13 @@ class Unary(nn.Module):
 
         X_embed = self.embed(X)
 
-        X_nl_embed = F.dropout(F.relu(X_embed))
+        X_nl_embed = F.dropout(F.relu(X_embed), p=self.dropout, training=self.training)
         X_poten = self.feature_reduce(X_nl_embed)
         return X_poten.squeeze(1)
 
 
 class Pairwise(nn.Module):
-    def __init__(self, embed_x_size, x_spatial_dim=None, embed_y_size=None, y_spatial_dim=None):
+    def __init__(self, embed_x_size, x_spatial_dim=None, embed_y_size=None, y_spatial_dim=None, dropout=0.5):
         """
             Captures interaction between utilities or entities of the same utility
         :param embed_x_size: the embedding dimension of the first utility
@@ -48,6 +49,7 @@ class Pairwise(nn.Module):
         """
 
         super(Pairwise, self).__init__()
+        self.dropout = dropout
         embed_y_size = embed_y_size if embed_y_size is not None else embed_x_size
         self.y_spatial_dim = y_spatial_dim if y_spatial_dim is not None else x_spatial_dim
 
@@ -69,8 +71,8 @@ class Pairwise(nn.Module):
         X_embed = self.embed_X(X_t)
         Y_embed = self.embed_Y(Y_t)
 
-        X_norm = F.normalize(X_embed)
-        Y_norm = F.normalize(Y_embed)
+        X_norm = F.dropout(F.normalize(X_embed), p=self.dropout, training=self.training)
+        Y_norm = F.dropout(F.normalize(Y_embed), p=self.dropout, training=self.training)
 
         S = X_norm.transpose(1, 2).bmm(Y_norm)
 
@@ -91,7 +93,7 @@ class Pairwise(nn.Module):
 
 
 class Atten(nn.Module):
-    def __init__(self, utils_conf: Dict[str, UtilsConf], sharing_factor_weights=None, prior_flag=False,
+    def __init__(self, utils_conf: Dict[str, UtilsConf], dropout=0.5, sharing_factor_weights=None, prior_flag=False,
                  size_force=False, pairwise_flag=True, unary_flag=True, self_flag=True):
         """
             The class performs an attention on a given list of utilities representation.
@@ -108,6 +110,8 @@ class Atten(nn.Module):
         super(Atten, self).__init__()
 
         self.utils_conf = utils_conf
+
+        self.dropout = dropout
 
         self.prior_flag = prior_flag
 
@@ -127,7 +131,7 @@ class Atten(nn.Module):
 
         if self.unary_flag:
             for util_name, util_conf in utils_conf.items():
-                self.un_models[util_name] = Unary(util_conf.emb_size)
+                self.un_models[util_name] = Unary(util_conf.emb_size, self.dropout)
                 if self.size_force:
                     self.spatial_pool[util_name] = nn.AdaptiveAvgPool1d(util_conf.spatial_size)
 
@@ -136,7 +140,8 @@ class Atten(nn.Module):
                 in combinations_with_replacement(utils_conf.items(), 2):
             if util_a_name == util_b_name:
                 if self.self_flag:
-                    self.pp_models[util_a_name] = Pairwise(util_a_conf.emb_size, util_a_conf.spatial_size)
+                    self.pp_models[util_a_name] = Pairwise(util_a_conf.emb_size, util_a_conf.spatial_size,
+                                                           dropout=self.dropout)
             else:
                 if pairwise_flag:
                     for util_name, util_shared_conf in self.sharing_factor_weights.items():
@@ -147,7 +152,8 @@ class Atten(nn.Module):
                             self.pp_models[f"({util_a_name}, {util_b_name})"] = Pairwise(util_a_conf.emb_size,
                                                                                          util_a_conf.spatial_size,
                                                                                          util_b_conf.emb_size,
-                                                                                         util_b_conf.spatial_size)
+                                                                                         util_b_conf.spatial_size,
+                                                                                         dropout=self.dropout)
 
         self.reduce_potentials = nn.ModuleDict()
         self.num_of_potentials = dict()
