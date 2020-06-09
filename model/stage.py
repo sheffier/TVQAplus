@@ -364,7 +364,8 @@ class Stage(pl.LightningModule):
         a_embed = self.text_encoder(batch["qas_bert"].view(bsz * num_a, -1, self.wd_size),  # (N*5, L, D)
                                     batch["qas_mask"].view(bsz * num_a, -1))                # (N*5, L)
         a_embed = a_embed.view(bsz, num_a, -1, hsz)  # (N, 5, L, D)
-        a_mask = batch["qas_mask"].view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
+        # a_mask = batch["qas_mask"].view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
+        a_mask = batch["qas_mask"].view(bsz, num_a, -1)  # (N, 5, L)
 
         num_imgs, num_words = batch["sub_bert"].shape[1:3]
 
@@ -379,7 +380,8 @@ class Stage(pl.LightningModule):
         # (N*Li, L, D)
         vid_embed = self.vid_encoder(vid_embed.view(bsz * num_imgs, num_regions, -1),      # (N*Li, Lw)
                                      batch["vid_mask"].view(bsz * num_imgs, num_regions))  # (N*Li, Lr)
-        vid_mask = batch["vid_mask"].view(bsz, 1, num_imgs, num_regions)  # (N, 1, Li, Lr)
+        # vid_mask = batch["vid_mask"].view(bsz, 1, num_imgs, num_regions)  # (N, 1, Li, Lr)
+        vid_mask = batch["vid_mask"].view(bsz * num_imgs, num_regions)  # (N*Li, Lr)
 
         a_embed_fga = a_embed.unsqueeze(1).expand([bsz, num_imgs, num_a, -1, hsz]).reshape(bsz * num_imgs * num_a, -1, hsz)
 
@@ -388,11 +390,18 @@ class Stage(pl.LightningModule):
                      "sub": sub_embed     # (N * Li, Lw, D)
                      }
 
+        a_embed_fga_mask = a_mask.unsqueeze(1).expand([bsz, num_imgs, num_a, -1]).reshape(bsz * num_imgs * num_a, -1)
+
+        att_mask = {"qa": a_embed_fga_mask,  # (N * Li * 5, L)
+                    "frame": vid_mask,       # (N * Li, Lr)
+                    "sub": sub_mask          # (N * Li, Lw)
+                    }
+
         # priors = {"qa":,
         #           "frames":,
         #           "subs":}
 
-        att_utils_dict = self.mul_atten(att_input, vid_embed.size(0), priors=None)
+        att_utils_dict = self.mul_atten(att_input, att_mask, vid_embed.size(0), priors=None)
 
         att_q = att_utils_dict["qa"].reshape(bsz, num_imgs, num_a, -1)     # (N, Li, 5, D)
         att_vid = att_utils_dict["frame"].reshape(bsz, num_imgs, -1)       # (N, Li, D)
@@ -405,6 +414,8 @@ class Stage(pl.LightningModule):
             cls_input_emb = self.concat_fc(concat_input_emb)
             cls_input_emb = cls_input_emb.transpose(2, 1)
 
+            a_mask = batch["qas_mask"].view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
+            vid_mask = batch["vid_mask"].view(bsz, 1, num_imgs, num_regions)  # (N, 1, Li, Lr)
             cls_input_mask = torch.matmul(a_mask.unsqueeze(-1), vid_mask.unsqueeze(-2))
             cls_input_mask = (cls_input_mask.sum(-1) != 0).float()
             cls_input_mask = (cls_input_mask.sum(-1) != 0).float().view(bsz, num_a, num_imgs, 1)
