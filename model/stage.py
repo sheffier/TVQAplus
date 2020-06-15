@@ -330,26 +330,24 @@ class Stage(pl.LightningModule):
 
         self.mul_atten = Atten(utils_conf=utils_conf, dropout=hparams.dropout, scale=hparams.scale,
                                sharing_factor_weights=sharing_factor_weights,
-                               prior_flag=False, pairwise_flag=True)
+                               prior_flag=False, pairwise_flag=True, self_flag=True, unary_flag=True)
 
         if self.concat_ctx:
-            self.concat_fc = nn.Sequential(
-                nn.LayerNorm(3 * hparams.hsz),
+            concat_dim = 4 * hparams.hsz
+
+            self.simnet = nn.Sequential(
+                nn.LayerNorm(concat_dim),
                 nn.Dropout(hparams.dropout),
-                nn.Linear(3 * hparams.hsz, hparams.hsz),
-                nn.ReLU(True),
-                nn.LayerNorm(hparams.hsz),
+                nn.Linear(concat_dim, concat_dim // 2, bias=False),
+                nn.ReLU(inplace=True),
+                nn.LayerNorm(concat_dim // 2),
+                nn.Dropout(hparams.dropout),
+                nn.Linear(concat_dim // 2, concat_dim // 4, bias=False),
+                nn.ReLU(inplace=True),
+                nn.Dropout(hparams.dropout),
+                nn.LayerNorm(concat_dim // 4),
+                nn.Linear(concat_dim // 4, 1)
             )
-
-        cls_stack_enc_conf = StackedEncoderConf(n_blocks=hparams.cls_encoder_n_blocks,
-                                                n_conv=hparams.cls_encoder_n_conv,
-                                                kernel_size=hparams.cls_encoder_kernel_size,
-                                                num_heads=hparams.cls_encoder_n_heads,
-                                                hidden_size=self.hsz,
-                                                dropout=hparams.dropout)
-
-        self.classfier_head_multi_proposal = ClassifierHeadMultiProposal(cls_stack_enc_conf, hparams.hsz,
-                                                                         hparams.add_local, hparams.t_iter)
 
         self.criterion = nn.CrossEntropyLoss(reduction="sum")
 
@@ -412,20 +410,24 @@ class Stage(pl.LightningModule):
 
         if self.concat_ctx:
             concat_input_emb = torch.cat([att_sub, att_vid, att_q], dim=-1)
-            cls_input_emb = self.concat_fc(concat_input_emb)
-            cls_input_emb = cls_input_emb.transpose(2, 1)
+            # concat_input_emb = torch.cat([att_sub * att_vid, att_vid, att_sub, att_q], dim=-1)
+            qa = torch.max(mask_logits(a_embed, a_mask.unsqueeze(-1)), 2)[0]
 
-            a_mask = batch["qas_mask"].view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
+            a_mask = a_mask.view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
             vid_mask = batch["vid_mask"].view(bsz, 1, num_imgs, num_regions)  # (N, 1, Li, Lr)
             cls_input_mask = torch.matmul(a_mask.unsqueeze(-1), vid_mask.unsqueeze(-2))
             cls_input_mask = (cls_input_mask.sum(-1) != 0).float()
             cls_input_mask = (cls_input_mask.sum(-1) != 0).float().view(bsz, num_a, num_imgs, 1)
+
+            concat_input_emb = concat_input_emb.transpose(2, 1).contiguous()  # (N, 5, Li, 4D)
+
+            cls_input_emb = torch.max(mask_logits(concat_input_emb, cls_input_mask), 2)[0]  # (N, 5, 4D)
+            cls_input_emb = torch.cat([cls_input_emb, qa], dim=-1)
+
+            out = self.simnet(cls_input_emb.view(bsz * num_a, -1))
+            out = out.squeeze(1).view(bsz, num_a)
         else:
             raise NotImplementedError
-
-        out = self.classfier_head_multi_proposal(
-            cls_input_emb, cls_input_mask, batch["target"], batch["ts_label"], batch["ts_label_mask"],
-            extra_span_length=self.extra_span_length)
 
         assert len(out) == len(batch["target"])
 
