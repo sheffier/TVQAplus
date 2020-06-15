@@ -97,7 +97,7 @@ class Pairwise(nn.Module):
 
 
 class Atten(nn.Module):
-    def __init__(self, utils_conf: Dict[str, UtilsConf], dropout=0.5, sharing_factor_weights=None, prior_flag=False,
+    def __init__(self, utils_conf: Dict[str, UtilsConf], dropout=0.5, scale=100, sharing_factor_weights=None, prior_flag=False,
                  size_force=False, pairwise_flag=True, unary_flag=True, self_flag=True):
         """
             The class performs an attention on a given list of utilities representation.
@@ -116,6 +116,8 @@ class Atten(nn.Module):
         self.utils_conf = utils_conf
 
         self.dropout = dropout
+
+        self.scale = scale
 
         self.prior_flag = prior_flag
 
@@ -297,7 +299,7 @@ class Atten(nn.Module):
             util_poten[util_name] = self.reduce_potentials[util_name](util_poten[util_name]).squeeze(1)
             mask = 1e10*(1 - utils_mask[util_name])
             util_poten[util_name] = util_poten[util_name] - mask
-            util_poten[util_name] = F.softmax(util_poten[util_name], dim=1).unsqueeze(2)
+            util_poten[util_name] = F.softmax(self.scale * util_poten[util_name], dim=1).unsqueeze(2)
             # attention.append(torch.bmm(utils[util_name].transpose(1, 2), util_poten[util_name]).squeeze(2))
             attention[util_name] = torch.bmm(utils[util_name].transpose(1, 2), util_poten[util_name]).squeeze(2)
 

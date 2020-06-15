@@ -328,7 +328,7 @@ class Stage(pl.LightningModule):
 
         sharing_factor_weights = {"qa": UtilSharedConf(num_utils=5, connected_list=["sub", "frame"])}
 
-        self.mul_atten = Atten(utils_conf=utils_conf, dropout=hparams.dropout,
+        self.mul_atten = Atten(utils_conf=utils_conf, dropout=hparams.dropout, scale=hparams.scale,
                                sharing_factor_weights=sharing_factor_weights,
                                prior_flag=False, pairwise_flag=True)
 
