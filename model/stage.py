@@ -364,7 +364,6 @@ class Stage(pl.LightningModule):
         a_embed = self.text_encoder(batch["qas_bert"].view(bsz * num_a, -1, self.wd_size),  # (N*5, L, D)
                                     batch["qas_mask"].view(bsz * num_a, -1))                # (N*5, L)
         a_embed = a_embed.view(bsz, num_a, -1, hsz)  # (N, 5, L, D)
-        # a_mask = batch["qas_mask"].view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
         a_mask = batch["qas_mask"].view(bsz, num_a, -1)  # (N, 5, L)
 
         num_imgs, num_words = batch["sub_bert"].shape[1:3]
@@ -372,18 +371,20 @@ class Stage(pl.LightningModule):
         # (N*Li, Lw, D)
         sub_embed = self.text_encoder(batch["sub_bert"].view(bsz * num_imgs, num_words, -1),  # (N*Li, Lw, D)
                                       batch["sub_mask"].view(bsz * num_imgs, num_words))      # (N*Li, Lw)
+        sub_embed = sub_embed.contiguous()
         sub_mask = batch["sub_mask"].view(bsz * num_imgs, num_words)  # (N*Li, Lw)
 
         num_imgs, num_regions = batch["vid"].shape[1:3]
         vid_embed = F.normalize(batch["vid"], p=2, dim=-1)  # (N, Li, Lr, D)
 
         # (N*Li, L, D)
-        vid_embed = self.vid_encoder(vid_embed.view(bsz * num_imgs, num_regions, -1),      # (N*Li, Lw)
+        vid_embed = self.vid_encoder(vid_embed.view(bsz * num_imgs, num_regions, -1),      # (N*Li, Lr, D)
                                      batch["vid_mask"].view(bsz * num_imgs, num_regions))  # (N*Li, Lr)
-        # vid_mask = batch["vid_mask"].view(bsz, 1, num_imgs, num_regions)  # (N, 1, Li, Lr)
+        vid_embed = vid_embed.contiguous()
         vid_mask = batch["vid_mask"].view(bsz * num_imgs, num_regions)  # (N*Li, Lr)
 
-        a_embed_fga = a_embed.unsqueeze(1).expand([bsz, num_imgs, num_a, -1, hsz]).reshape(bsz * num_imgs * num_a, -1, hsz)
+        a_embed_fga = a_embed.unsqueeze(1).expand([bsz, num_imgs, num_a, -1, hsz]).reshape(bsz * num_imgs * num_a, -1,
+                                                                                           hsz)
 
         att_input = {"qa": a_embed_fga,   # (N * Li * 5, L, D)
                      "frame": vid_embed,  # (N * Li, Lr, D)
@@ -487,7 +488,7 @@ class Stage(pl.LightningModule):
         outputs = self.forward(batch)
         targets = batch["target"]
 
-        cls_loss = self.criterion(outputs, batch["target"])
+        cls_loss = self.criterion(outputs, targets)
         loss = cls_loss
 
         # measure accuracy and record loss
