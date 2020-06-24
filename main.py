@@ -3,6 +3,7 @@ import torch
 import pytorch_lightning as pl
 import torch.backends.cudnn as cudnn
 from pytorch_lightning.callbacks import EarlyStopping
+from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from config import Config
 from model.stage import Stage
 from utils import count_parameters
@@ -28,7 +29,14 @@ def main(hparams):
         mode='max'
     )
 
-    trainer = pl.Trainer(max_epochs=hparams.n_epoch,
+    tensorboard_logger = TensorBoardLogger('tb_logs', name='tvqa_lightning')
+    wandb_logger = WandbLogger(name=hparams.exp_name, project='TVQA')
+    # wandb_logger.watch(model, log='all')
+
+    loggers = [tensorboard_logger, wandb_logger]
+
+    trainer = pl.Trainer(logger=loggers,
+                         max_epochs=hparams.n_epoch,
                          val_check_interval=hparams.val_check_interval,
                          default_root_dir=hparams.save_model_dir,
                          gpus=hparams.device_ids,
