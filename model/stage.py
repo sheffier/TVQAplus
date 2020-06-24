@@ -427,7 +427,7 @@ class Stage(pl.LightningModule):
             # measure accuracy and record loss
             with torch.no_grad():
                 pred_ids = outputs.argmax(dim=1, keepdim=True)
-                correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum().item()
+                correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum()
 
             return {'loss': loss,
                     'train_n_correct': correct_ids,
@@ -442,18 +442,14 @@ class Stage(pl.LightningModule):
             raise e
 
     def training_epoch_end(self, outputs):
-        n_total_correct_ids = sum([out["train_n_correct"] for out in outputs])
-        n_total_ids = sum([out["train_n_ids"] for out in outputs])
+        with torch.no_grad():
+            n_total_correct_ids = torch.tensor([out["train_n_correct"] for out in outputs]).sum(dtype=torch.float)
+            n_total_ids = torch.tensor([out["train_n_ids"] for out in outputs]).sum(dtype=torch.float)
 
-        accuracy = float(n_total_correct_ids) / float(n_total_ids)
+            accuracy = n_total_correct_ids / n_total_ids
 
-        train_total_loss_mean = 0.0
-        for output in outputs:
-            train_total_loss = output['loss']
-
-            train_total_loss_mean += train_total_loss
-
-        train_total_loss_mean /= n_total_ids
+            train_total_loss_mean = torch.tensor([out["loss"] for out in outputs]).sum(dtype=torch.float)
+            train_total_loss_mean /= n_total_ids
 
         metric_dict = {'train_loss': train_total_loss_mean, 'train_acc': accuracy}
         logger_logs = {'train_total_loss': train_total_loss_mean,
@@ -475,7 +471,7 @@ class Stage(pl.LightningModule):
 
         # measure accuracy and record loss
         pred_ids = outputs.argmax(dim=1, keepdim=True)
-        correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum().item()
+        correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum()
 
         return {'val_loss': loss,
                 'valid_n_correct': correct_ids,
@@ -484,23 +480,21 @@ class Stage(pl.LightningModule):
 
     def validation_epoch_end(self, outputs):
         # OPTIONAL
-        n_total_correct_ids = sum([out["valid_n_correct"] for out in outputs])
-        n_total_ids = sum([out["valid_n_ids"] for out in outputs])
+        with torch.no_grad():
+            n_total_correct_ids = torch.tensor([out["valid_n_correct"] for out in outputs]).sum(dtype=torch.float)
+            n_total_ids = torch.tensor([out["valid_n_ids"] for out in outputs]).sum(dtype=torch.float)
 
-        accuracy = float(n_total_correct_ids) / float(n_total_ids)
+            accuracy = n_total_correct_ids / n_total_ids
 
-        val_total_loss_mean = 0.0
-        for output in outputs:
-            val_total_loss = output['val_loss']
+            if accuracy > self.best_val_acc:
+                self.best_val_acc = accuracy
 
-            val_total_loss_mean += val_total_loss
-
-        val_total_loss_mean /= n_total_ids
+            val_total_loss_mean = torch.tensor([out["val_loss"] for out in outputs]).sum(dtype=torch.float)
+            val_total_loss_mean /= n_total_ids
 
         metric_dict = {'val_loss': val_total_loss_mean, 'val_acc': accuracy}
         logger_logs = {'valid_total_loss': val_total_loss_mean,
-                       'valid_acc': accuracy,
-                       'best_val_acc': self.best_val_acc
+                       'valid_acc': accuracy
                        }
 
         result = {'progress_bar': metric_dict, 'log': logger_logs}
