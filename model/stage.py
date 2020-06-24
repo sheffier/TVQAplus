@@ -118,8 +118,6 @@ class ClassifierHeadMultiProposal(nn.Module):
         self.t_iter = t_iter
         self.add_local = add_local
 
-        self.cls_encoder = StackedEncoder(stacked_enc_conf)
-
         self.cls_projection_layers = nn.ModuleList(
             [
                 LinearWrapper(in_hsz=hsz,
@@ -136,22 +134,6 @@ class ClassifierHeadMultiProposal(nn.Module):
                            dropout=stacked_enc_conf.dropout,
                            relu=True)
                 for _ in range(t_iter)])
-
-        self.temporal_scoring_st_layers = nn.ModuleList([
-            LinearWrapper(in_hsz=hsz,
-                          out_hsz=1,
-                          layer_norm=True,
-                          dropout=stacked_enc_conf.dropout,
-                          relu=False)
-            for _ in range(t_iter+1)])
-
-        self.temporal_scoring_ed_layers = nn.ModuleList([
-            LinearWrapper(in_hsz=hsz,
-                          out_hsz=1,
-                          layer_norm=True,
-                          dropout=stacked_enc_conf.dropout,
-                          relu=False)
-            for _ in range(t_iter+1)])
 
         self.classifier = LinearWrapper(in_hsz=hsz * 2 if add_local else hsz,
                                         out_hsz=1,
@@ -272,7 +254,6 @@ class ClassifierHeadMultiProposal(nn.Module):
         bsz, num_a, num_img, num_words = statement_mask.shape
         statement = statement.view(bsz * num_a * num_img, num_words, -1)  # (N*5*Li, Lqa, D)
         statement_mask = statement_mask.view(bsz * num_a * num_img, num_words)  # (N*5*Li, Lqa)
-        statement = self.cls_encoder(statement, statement_mask)  # (N*5*Li, Lqa, D)
         max_statement = torch.max(mask_logits(statement, statement_mask.unsqueeze(2)), 1)[0]  # (N*5*Li, D)
         max_statement_mask = (statement_mask.sum(1) != 0).float().view(bsz, num_a, num_img, 1)  # (N, 5, Li, 1)
         max_statement = max_statement.view(bsz * num_a, num_img, -1)  # (N, 5, Li, D)
@@ -342,6 +323,12 @@ class Stage(pl.LightningModule):
         if self.vfeat_flag:
             self.vid_encoder = InputVideoEncoder(hparams.vfeat_size, bridge_hsz, hparams.dropout, common_encoder)
 
+        self.qa_ctx_attn = StructuredAttentionWithDownsize(
+            hparams.hsz,
+            dropout=hparams.dropout,
+            scale=hparams.scale,
+            add_void=hparams.add_non_visual)  # no parameters inside
+
         if self.concat_ctx:
             self.concat_fc = nn.Sequential(
                 nn.LayerNorm(3 * hparams.hsz),
@@ -350,12 +337,6 @@ class Stage(pl.LightningModule):
                 nn.ReLU(True),
                 nn.LayerNorm(hparams.hsz),
             )
-
-        self.qa_ctx_attn = StructuredAttentionWithDownsize(
-            hparams.hsz,
-            dropout=hparams.dropout,
-            scale=hparams.scale,
-            add_void=hparams.add_non_visual)  # no parameters inside
 
         cls_stack_enc_conf = StackedEncoderConf(n_blocks=hparams.cls_encoder_n_blocks,
                                                 n_conv=hparams.cls_encoder_n_conv,
@@ -442,8 +423,9 @@ class Stage(pl.LightningModule):
             loss = cls_loss
 
             # measure accuracy and record loss
-            pred_ids = outputs.argmax(dim=1, keepdim=True)
-            correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum().item()
+            with torch.no_grad():
+                pred_ids = outputs.argmax(dim=1, keepdim=True)
+                correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum().item()
 
             return {'loss': loss,
                     'train_n_correct': correct_ids,
@@ -491,7 +473,6 @@ class Stage(pl.LightningModule):
 
         # measure accuracy and record loss
         pred_ids = outputs.argmax(dim=1, keepdim=True)
-
         correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum().item()
 
         return {'val_loss': loss,
