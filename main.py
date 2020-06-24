@@ -23,7 +23,7 @@ def main(hparams):
 
     early_stop_callback = EarlyStopping(
         monitor='val_acc',
-        patience=hparams.max_es_cnt,
+        patience=hparams.max_es_cnt * 2,
         verbose=True,
         mode='max'
     )

@@ -43,6 +43,9 @@ class Config:
     def parse(self):
         hparams = self.parser.parse_args()
 
+        if hparams.distributed_backend == '':
+            hparams.distributed_backend = None
+
         if hparams.val_check_interval.is_integer() and hparams.val_check_interval > 1:
             hparams.val_check_interval = int(hparams.val_check_interval)
         else:
