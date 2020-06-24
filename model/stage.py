@@ -7,7 +7,7 @@ import argparse
 
 from argparse import Namespace
 from torch.utils.data import DataLoader
-from tvqa_dataset import TVQACommonDataset, TVQASplitDataset, pad_collate, PadCollate
+from tvqa_dataset import TVQACommonDataset, TVQASplitDataset, PadCollate
 from .context_query_attention import StructuredAttentionWithDownsize
 from .encoder import StackedEncoder, StackedEncoderConf
 from .cnn import DepthwiseSeparableConv

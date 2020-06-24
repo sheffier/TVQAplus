@@ -1,8 +1,8 @@
 import random
 import torch
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import EarlyStopping
 import torch.backends.cudnn as cudnn
+from pytorch_lightning.callbacks import EarlyStopping
 from config import Config
 from model.stage import Stage
 from utils import count_parameters
