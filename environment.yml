@@ -1,18 +1,27 @@
 name: tvqa
-channels:
-  - pytorch
 dependencies:
   - python=3.7
-  - pytorch=1.5
-  - torchvision
+  - pip=20.1.1
+  - pytorch::pytorch=1.5
+  - pytorch::torchvision
   - cudatoolkit=10.1
   - hdf5
   - h5py=2.10.0
+  - nodejs
   - jupyter=1.0.0
   - jupyterlab=2.1.2
-  - tensorboard=2.1.1
-  - tqdm=4.46.0
+  - jupyter_contrib_nbextensions
+  - jupyter_nbextensions_configurator
+  - tensorboard
+  - tqdm
   - matplotlib
+  - comet_ml::comet_ml
+  - optuna
+  - joblib
+  - pudb
+  - plotly
   - pip:
       - pytorch-lightning
       - wandb
+      - neptune-contrib[monitoring]
+      - neptune-notebooks
