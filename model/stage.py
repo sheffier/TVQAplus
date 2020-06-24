@@ -402,6 +402,8 @@ class Stage(pl.LightningModule):
 
         att_utils_dict = self.mul_atten(att_input, att_mask, vid_embed.size(0), priors=None)
 
+        qa = torch.max(mask_logits(a_embed, a_mask.unsqueeze(-1)), 2)[0]
+
         att_q = att_utils_dict["qa"].reshape(bsz, num_imgs, num_a, -1)     # (N, Li, 5, D)
         att_vid = att_utils_dict["frame"].reshape(bsz, num_imgs, -1)       # (N, Li, D)
         att_vid = att_vid.unsqueeze(2).expand([bsz, num_imgs, num_a, -1])  # (N, Li, 5, D)
@@ -410,8 +412,6 @@ class Stage(pl.LightningModule):
 
         if self.concat_ctx:
             concat_input_emb = torch.cat([att_sub, att_vid, att_q], dim=-1)
-            # concat_input_emb = torch.cat([att_sub * att_vid, att_vid, att_sub, att_q], dim=-1)
-            qa = torch.max(mask_logits(a_embed, a_mask.unsqueeze(-1)), 2)[0]
 
             a_mask = a_mask.view(bsz, num_a, 1, -1)  # (N, 5, 1, L)
             vid_mask = batch["vid_mask"].view(bsz, 1, num_imgs, num_regions)  # (N, 1, Li, Lr)
@@ -419,10 +419,10 @@ class Stage(pl.LightningModule):
             cls_input_mask = (cls_input_mask.sum(-1) != 0).float()
             cls_input_mask = (cls_input_mask.sum(-1) != 0).float().view(bsz, num_a, num_imgs, 1)
 
-            concat_input_emb = concat_input_emb.transpose(2, 1).contiguous()  # (N, 5, Li, 4D)
+            concat_input_emb = concat_input_emb.transpose(2, 1).contiguous()  # (N, 5, Li, 3D)
 
-            cls_input_emb = torch.max(mask_logits(concat_input_emb, cls_input_mask), 2)[0]  # (N, 5, 4D)
-            cls_input_emb = torch.cat([cls_input_emb, qa], dim=-1)
+            cls_input_emb = torch.max(mask_logits(concat_input_emb, cls_input_mask), 2)[0]  # (N, 5, 3D)
+            cls_input_emb = torch.cat([cls_input_emb, qa], dim=-1) # (N, 5, 4D)
 
             out = self.simnet(cls_input_emb.view(bsz * num_a, -1))
             out = out.squeeze(1).view(bsz, num_a)
@@ -447,7 +447,7 @@ class Stage(pl.LightningModule):
             # measure accuracy and record loss
             with torch.no_grad():
                 pred_ids = outputs.argmax(dim=1, keepdim=True)
-                correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum().item()
+                correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum()
 
             return {'loss': loss,
                     'train_n_correct': correct_ids,
@@ -462,18 +462,14 @@ class Stage(pl.LightningModule):
             raise e
 
     def training_epoch_end(self, outputs):
-        n_total_correct_ids = sum([out["train_n_correct"] for out in outputs])
-        n_total_ids = sum([out["train_n_ids"] for out in outputs])
+        with torch.no_grad():
+            n_total_correct_ids = torch.tensor([out["train_n_correct"] for out in outputs]).sum(dtype=torch.float)
+            n_total_ids = torch.tensor([out["train_n_ids"] for out in outputs]).sum(dtype=torch.float)
 
-        accuracy = float(n_total_correct_ids) / float(n_total_ids)
+            accuracy = n_total_correct_ids / n_total_ids
 
-        train_total_loss_mean = 0.0
-        for output in outputs:
-            train_total_loss = output['loss']
-
-            train_total_loss_mean += train_total_loss
-
-        train_total_loss_mean /= n_total_ids
+            train_total_loss_mean = torch.tensor([out["loss"] for out in outputs]).sum(dtype=torch.float)
+            train_total_loss_mean /= n_total_ids
 
         metric_dict = {'train_loss': train_total_loss_mean, 'train_acc': accuracy}
         logger_logs = {'train_total_loss': train_total_loss_mean,
@@ -495,7 +491,7 @@ class Stage(pl.LightningModule):
 
         # measure accuracy and record loss
         pred_ids = outputs.argmax(dim=1, keepdim=True)
-        correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum().item()
+        correct_ids = pred_ids.eq(targets.view_as(pred_ids)).sum()
 
         return {'val_loss': loss,
                 'valid_n_correct': correct_ids,
@@ -504,18 +500,17 @@ class Stage(pl.LightningModule):
 
     def validation_epoch_end(self, outputs):
         # OPTIONAL
-        n_total_correct_ids = sum([out["valid_n_correct"] for out in outputs])
-        n_total_ids = sum([out["valid_n_ids"] for out in outputs])
+        with torch.no_grad():
+            n_total_correct_ids = torch.tensor([out["valid_n_correct"] for out in outputs]).sum(dtype=torch.float)
+            n_total_ids = torch.tensor([out["valid_n_ids"] for out in outputs]).sum(dtype=torch.float)
 
-        accuracy = float(n_total_correct_ids) / float(n_total_ids)
+            accuracy = n_total_correct_ids / n_total_ids
 
-        val_total_loss_mean = 0.0
-        for output in outputs:
-            val_total_loss = output['val_loss']
+            if accuracy > self.best_val_acc:
+                self.best_val_acc = accuracy
 
-            val_total_loss_mean += val_total_loss
-
-        val_total_loss_mean /= n_total_ids
+            val_total_loss_mean = torch.tensor([out["val_loss"] for out in outputs]).sum(dtype=torch.float)
+            val_total_loss_mean /= n_total_ids
 
         metric_dict = {'val_loss': val_total_loss_mean, 'val_acc': accuracy}
         logger_logs = {'valid_total_loss': val_total_loss_mean,
