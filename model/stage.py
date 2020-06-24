@@ -494,7 +494,8 @@ class Stage(pl.LightningModule):
 
         metric_dict = {'val_loss': val_total_loss_mean, 'val_acc': accuracy}
         logger_logs = {'valid_total_loss': val_total_loss_mean,
-                       'valid_acc': accuracy
+                       'valid_acc': accuracy,
+                       'best_val_acc': self.best_val_acc
                        }
 
         result = {'progress_bar': metric_dict, 'log': logger_logs}
