@@ -387,7 +387,7 @@ class Stage(pl.LightningModule):
         num_imgs, num_words = batch["sub_bert"].shape[1:3]
 
         # (N*Li, Lw, D)
-        sub_embed = self.text_encoder(batch["sub_bert"].view(bsz * num_imgs, num_words, -1),  # (N*Li, Lw)
+        sub_embed = self.text_encoder(batch["sub_bert"].view(bsz * num_imgs, num_words, -1),  # (N*Li, Lw, D)
                                       batch["sub_mask"].view(bsz * num_imgs, num_words))      # (N*Li, Lw)
 
         sub_embed = sub_embed.contiguous().view(bsz, 1, num_imgs, num_words, -1)  # (N, Li, Lw, D)

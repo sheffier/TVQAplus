@@ -36,7 +36,7 @@ class StructuredAttention(nn.Module):
         """
         match the dim of '*', singlton is allowed
         Args:
-            C: (N, 5, Li, Lqa, D)
+            C: (N, 5, 1, Lqa, D)
             Q: (N, 1, Li, Lr, D)
             c_mask: (N, 5, Li, Lqa)
             q_mask: (N, 1, Li, Lr)
