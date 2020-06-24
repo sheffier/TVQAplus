@@ -107,26 +107,28 @@ class StructuredAttentionWithDownsize(nn.Module):
 
         self.qa_ctx_attn = StructuredAttention(dropout, scale, add_void)
 
-        self.down_projection = nn.Sequential(
-            nn.LayerNorm(3 * hsz),
-            nn.Dropout(dropout),
-            nn.Linear(3 * hsz, hsz),
-            nn.ReLU(True),
-        )
+        # self.down_projection = nn.Sequential(
+        #     nn.LayerNorm(3 * hsz),
+        #     nn.Dropout(dropout),
+        #     nn.Linear(3 * hsz, hsz),
+        #     nn.ReLU(True),
+        # )
 
     def forward(self, C, Q, c_mask, q_mask, noun_mask=None, void_vector=None):
         u_a, raw_s, s_mask, s_normalized = self.qa_ctx_attn(C, Q, c_mask, q_mask, noun_mask, void_vector)
 
-        num_img, _ = q_mask.shape[2:]
+        return u_a, (s_mask.sum(-1) != 0).float(), raw_s, s_normalized
 
-        C = C.repeat(1, 1, num_img, 1, 1)
-        mixed = torch.cat([C,
-                           u_a,
-                           C * u_a], dim=-1)  # (N, 5, Li, Lqa, D)
-        mixed = self.down_projection(mixed)  # (N, 5, Li, Lqa, D)
-        mixed_mask = (s_mask.sum(-1) != 0).float()  # (N, 5, Li, Lqa)
-
-        return mixed, mixed_mask, raw_s, s_normalized
+        # num_img, _ = q_mask.shape[2:]
+        #
+        # C = C.repeat(1, 1, num_img, 1, 1)
+        # mixed = torch.cat([C,
+        #                    u_a,
+        #                    C * u_a], dim=-1)  # (N, 5, Li, Lqa, D)
+        # mixed = self.down_projection(mixed)  # (N, 5, Li, Lqa, D)
+        # mixed_mask = (s_mask.sum(-1) != 0).float()  # (N, 5, Li, Lqa)
+        #
+        # return mixed, mixed_mask, raw_s, s_normalized
 
 
 class ContextQueryAttention(nn.Module):
