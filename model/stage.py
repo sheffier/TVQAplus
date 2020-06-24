@@ -353,6 +353,8 @@ class Stage(pl.LightningModule):
 
         self.pad_collate = PadCollate(hparams)
 
+        self.best_val_acc = 0
+
     def forward(self, batch):
         bsz = len(batch["qid"])
         num_a = batch["qas"].shape[1]
@@ -514,7 +516,8 @@ class Stage(pl.LightningModule):
 
         metric_dict = {'val_loss': val_total_loss_mean, 'val_acc': accuracy}
         logger_logs = {'valid_total_loss': val_total_loss_mean,
-                       'valid_acc': accuracy
+                       'valid_acc': accuracy,
+                       'best_val_acc': self.best_val_acc
                        }
 
         result = {'progress_bar': metric_dict, 'log': logger_logs}
